@@ -1,0 +1,12 @@
+/* FinanceOS — responsive.css */
+@media (max-width: 900px) {
+  .app { grid-template-columns: 1fr; }
+  .sidebar { flex-direction: row; padding: 12px; overflow-x: auto; }
+  .nav { flex-direction: row; margin: 0; }
+  .brand { border-bottom: none; padding: 0 12px 0 0; }
+  .sidebar-footer { display: none; }
+  .review-grid { grid-template-columns: 1fr; }
+  .preview-panel { border-right: none; border-bottom: 1px solid var(--border); max-height: 400px; }
+  .main { padding: 16px; }
+  .audit-item { grid-template-columns: 1fr; gap: 4px; }
+}

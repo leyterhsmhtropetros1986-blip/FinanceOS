@@ -1,0 +1,3 @@
+/* FinanceOS — charts.css */
+/* Chart canvas containers */
+.chart-card canvas { display: block; max-width: 100%; }

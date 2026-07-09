@@ -1,0 +1,160 @@
+/* FinanceOS — forms.css */
+/* ─── Form controls ─────────────────────────────────────── */
+input[type="text"], input[type="search"], input[type="date"],
+input[type="password"], select, textarea {
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface); color: var(--text);
+  outline: none;
+  transition: all 0.15s ease;
+  width: 100%;
+}
+input:hover:not(:focus), select:hover:not(:focus) {
+  border-color: var(--text-muted);
+}
+input:focus, select:focus, textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-glow);
+}
+
+/* ─── Upload zone ───────────────────────────────────────── */
+.upload-zone {
+  border: 2px dashed var(--border-strong);
+  border-radius: var(--r-lg);
+  background:
+    radial-gradient(600px 200px at 50% 0%, rgba(44,95,91,0.03), transparent 60%),
+    var(--surface);
+  padding: 60px 28px; text-align: center;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  cursor: pointer;
+  position: relative;
+}
+.upload-zone:hover {
+  border-color: var(--accent);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+.upload-zone.is-dragover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  transform: scale(1.005);
+  box-shadow: var(--shadow-lg);
+}
+.upload-icon {
+  width: 64px; height: 64px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent-soft), rgba(44,95,91,0.1));
+  color: var(--accent); font-size: 32px;
+  display: grid; place-items: center;
+  margin: 0 auto 20px;
+  font-weight: 300;
+  border: 1px solid rgba(44,95,91,0.15);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.5);
+}
+.upload-text {
+  font-size: 16px; font-weight: 500;
+  margin-bottom: 6px; color: var(--text);
+}
+.upload-sub { font-size: 12px; color: var(--text-muted); letter-spacing: 0.02em; }
+.upload-link {
+  color: var(--accent); cursor: pointer;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.upload-hint {
+  margin-top: 14px;
+  font-size: 11px; color: var(--text-subtle);
+  max-width: 520px; margin-left: auto; margin-right: auto;
+  line-height: 1.7;
+}
+.upload-hint code {
+  background: var(--bg-sunken); padding: 2px 6px;
+  border-radius: 4px; font-family: var(--font-mono);
+  font-size: 10px; color: var(--accent);
+}
+
+.upload-progress { margin-top: 20px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-md); padding: 16px 20px; display: flex; align-items: center; gap: 16px; }
+.progress-sub { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.spinner { width: 22px; height: 22px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ─── Review panel ──────────────────────────────────────── */
+.review { margin-top: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow-sm); overflow: hidden; }
+.review-head { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; background: var(--surface-alt); flex-wrap: wrap; gap: 12px; }
+.review-head h2 { font-size: 16px; font-weight: 600; }
+.engine-badge { font-family: var(--font-mono); font-size: 11px; padding: 3px 8px; border-radius: var(--r-sm); background: var(--bg-sunken); color: var(--text-muted); }
+.review-grid { display: grid; grid-template-columns: 1fr 400px; gap: 0; }
+.review-fields { padding: 20px; }
+.review-side { padding: 20px; background: var(--surface-alt); border-left: 1px solid var(--border); display: flex; flex-direction: column; gap: 16px; }
+
+/* ─── Document preview ─────────────────────────────────── */
+.preview-panel {
+  background: #E8EAED;
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  max-height: 900px;
+}
+.preview-toolbar {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px;
+}
+.preview-toolbar button {
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  padding: 4px 10px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font-size: 12px;
+}
+.preview-toolbar button:hover { background: var(--border); }
+.preview-container {
+  flex: 1; overflow: auto;
+  padding: 12px;
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+}
+.preview-page {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  background: white;
+  transition: transform 0.15s ease;
+}
+.preview-loading {
+  padding: 40px; color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* ─── OCR Confidence panel (spec §8) ────────────────────── */
+.confidence-panel { background: var(--bg-sunken); border-radius: var(--r-md); padding: 12px 14px; margin-bottom: 20px; }
+.confidence-panel-head { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-muted); margin-bottom: 10px; display: flex; justify-content: space-between; }
+.confidence-row { display: grid; grid-template-columns: 100px 1fr 44px; align-items: center; gap: 12px; padding: 4px 0; font-size: 13px; }
+.conf-bar-wrap { background: var(--surface); border-radius: 4px; height: 6px; overflow: hidden; border: 1px solid var(--border); }
+.conf-bar { display: block; height: 100%; width: 0; background: var(--text-subtle); transition: width 0.6s cubic-bezier(0.16, 1, 0.3, 1), background 0.3s ease; border-radius: 4px; }
+.conf-bar.ok { background: var(--ok); }
+.conf-bar.warn { background: var(--warn); }
+.conf-bar.err { background: var(--err); }
+.conf-pct { font-family: var(--font-mono); font-size: 12px; font-weight: 500; text-align: right; color: var(--text-muted); }
+.conf-pct.ok { color: var(--ok); }
+.conf-pct.warn { color: var(--warn); }
+.conf-pct.err { color: var(--err); }
+
+/* ─── Editable fields ───────────────────────────────────── */
+.field { margin-bottom: 16px; }
+.field label { display: block; font-size: 12px; font-weight: 500; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.4px; }
+.field-hint { font-size: 11px; color: var(--text-subtle); margin-top: 4px; }
+.field-hint.warn { color: var(--warn); }
+.field-hint.ok { color: var(--ok); }
+#fld-sap-manual { margin-top: 6px; }
+
+.validation-errors { background: var(--err-soft); border: 1px solid var(--err); border-radius: var(--r-md); padding: 12px 14px; margin-bottom: 16px; }
+.validation-errors-title { font-weight: 600; color: var(--err); margin-bottom: 6px; font-size: 13px; }
+.validation-errors ul { list-style: none; padding: 0; margin: 0; }
+.validation-errors li { font-size: 12px; color: var(--err); padding: 2px 0; }
+
+.review-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }

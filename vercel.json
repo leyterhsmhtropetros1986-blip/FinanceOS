@@ -1,0 +1,9 @@
+{
+  "version": 2,
+  "builds": [{ "src": "FinanceOS/index.html", "use": "@vercel/static" }],
+  "routes": [
+    { "src": "/FinanceOS/(.*)", "dest": "/FinanceOS/$1" },
+    { "src": "/", "dest": "/FinanceOS/index.html" },
+    { "src": "/(.*)", "dest": "/FinanceOS/$1" }
+  ]
+}

@@ -1,0 +1,34 @@
+/* FinanceOS — tables.css */
+/* ─── Data tables ───────────────────────────────────────── */
+.table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; box-shadow: var(--shadow-sm); }
+.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.data-table th { text-align: left; padding: 14px 16px; background: var(--surface-alt); color: var(--text-muted); font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; border-bottom: 1px solid var(--border); }
+.data-table td { padding: 14px 16px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.data-table tbody tr:last-child td { border-bottom: none; }
+.data-table tbody tr { transition: background 0.12s ease; }
+.data-table tbody tr:hover { background: var(--surface-alt); }
+.data-table .mono { font-size: 12px; color: var(--text-muted); }
+.empty-row { text-align: center; color: var(--text-subtle); font-size: 13px; padding: 48px !important; font-style: italic; }
+
+.status-pill { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 500; letter-spacing: 0.02em; border: 1px solid transparent; }
+.status-pending { background: var(--bg-sunken); color: var(--text-muted); border-color: var(--border); }
+.status-needs_review { background: var(--warn-soft); color: var(--warn); border-color: rgba(177,92,0,0.2); }
+.status-archived { background: var(--ok-soft); color: var(--ok); border-color: rgba(16,104,76,0.2); }
+.status-error { background: var(--err-soft); color: var(--err); border-color: rgba(163,35,35,0.2); }
+.status-duplicate { background: var(--accent-soft); color: var(--accent); border-color: rgba(44,95,91,0.2); }
+.status-inactive { background: var(--bg-sunken); color: var(--text-muted); }
+.status-active { background: var(--ok-soft); color: var(--ok); border-color: rgba(16,104,76,0.2); }
+
+/* ─── Audit log ─────────────────────────────────────────── */
+.audit-list { display: flex; flex-direction: column; gap: 6px; }
+.audit-item { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--text-subtle); border-radius: var(--r-sm); padding: 10px 14px; display: grid; grid-template-columns: 130px 130px 1fr 140px; gap: 12px; align-items: center; font-size: 12px; }
+.audit-item.success { border-left-color: var(--ok); }
+.audit-item.warning { border-left-color: var(--warn); }
+.audit-item.failure { border-left-color: var(--err); }
+.audit-action { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); font-weight: 500; }
+.audit-message { color: var(--text); }
+.audit-time { color: var(--text-subtle); text-align: right; font-family: var(--font-mono); font-size: 11px; }
+
+/* ─── Import summary ────────────────────────────────────── */
+#import-summary { background: var(--ok-soft); border: 1px solid var(--ok); color: var(--ok); border-radius: var(--r-md); padding: 12px 14px; margin-bottom: 16px; font-size: 13px; }
+#import-summary.has-errors { background: var(--warn-soft); border-color: var(--warn); color: var(--warn); }

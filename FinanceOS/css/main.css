@@ -1,0 +1,66 @@
+/* FinanceOS — main.css */
+:root {
+  /* Warm sophisticated palette — Mediterranean archive aesthetic */
+  --bg:            #F5F1EA;
+  --bg-sunken:     #EDE7DD;
+  --surface:       #FFFFFF;
+  --surface-alt:   #FCFAF6;
+  --border:        #E5DFD3;
+  --border-strong: #C7BFAF;
+
+  --text:          #1F1B15;
+  --text-muted:    #695F52;
+  --text-subtle:   #948A7B;
+
+  /* Accent — deep sophisticated teal */
+  --accent:        #2C5F5B;
+  --accent-hover:  #1F4744;
+  --accent-soft:   #E1EDEC;
+  --accent-glow:   rgba(44, 95, 91, 0.15);
+
+  --ok:            #10684C;
+  --ok-soft:       #DDEBDF;
+  --warn:          #B15C00;
+  --warn-soft:     #FBEEDA;
+  --err:           #A32323;
+  --err-soft:      #F5DDDD;
+
+  --sidebar-bg:    #1F1B15;
+  --sidebar-fg:    #D6CFC1;
+  --sidebar-muted: #7F7663;
+  --sidebar-hover: #2E2A22;
+  --sidebar-active:#2C5F5B;
+
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --shadow-sm: 0 1px 3px rgba(31,27,21,0.06), 0 1px 2px rgba(31,27,21,0.04);
+  --shadow-md: 0 8px 24px rgba(31,27,21,0.08), 0 2px 8px rgba(31,27,21,0.04);
+  --shadow-lg: 0 20px 40px rgba(31,27,21,0.10), 0 4px 12px rgba(31,27,21,0.06);
+
+  --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --font-display: 'Fraunces', 'Playfair Display', Georgia, serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--text);
+  background:
+    radial-gradient(1200px 800px at 20% 0%, rgba(44,95,91,0.03), transparent 60%),
+    radial-gradient(1000px 600px at 100% 100%, rgba(177,92,0,0.03), transparent 60%),
+    var(--bg);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  line-height: 1.55;
+  font-feature-settings: "ss01" 1, "cv11" 1;
+}
+button { font-family: inherit; cursor: pointer; }
+input, select, textarea { font-family: inherit; font-size: 14px; }
+.mono { font-family: var(--font-mono); font-feature-settings: "tnum" 1; letter-spacing: -0.01em; }
+
+.app { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
