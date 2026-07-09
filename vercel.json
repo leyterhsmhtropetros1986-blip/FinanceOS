@@ -1,9 +1,41 @@
 {
-  "version": 2,
-  "builds": [{ "src": "FinanceOS/index.html", "use": "@vercel/static" }],
-  "routes": [
-    { "src": "/FinanceOS/(.*)", "dest": "/FinanceOS/$1" },
-    { "src": "/", "dest": "/FinanceOS/index.html" },
-    { "src": "/(.*)", "dest": "/FinanceOS/$1" }
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    { "source": "/css/:path*", "destination": "/FinanceOS/css/:path*" },
+    { "source": "/js/:path*", "destination": "/FinanceOS/js/:path*" },
+    { "source": "/assets/:path*", "destination": "/FinanceOS/assets/:path*" },
+    { "source": "/data/:path*", "destination": "/FinanceOS/data/:path*" },
+    { "source": "/FinanceOS", "destination": "/FinanceOS/index.html" },
+    { "source": "/", "destination": "/FinanceOS/index.html" }
+  ],
+  "headers": [
+    {
+      "source": "/css/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" },
+        { "key": "Content-Type", "value": "text/css; charset=utf-8" }
+      ]
+    },
+    {
+      "source": "/FinanceOS/css/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" },
+        { "key": "Content-Type", "value": "text/css; charset=utf-8" }
+      ]
+    },
+    {
+      "source": "/js/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" },
+        { "key": "Content-Type", "value": "text/javascript; charset=utf-8" }
+      ]
+    },
+    {
+      "source": "/FinanceOS/js/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "public, max-age=31536000, immutable" },
+        { "key": "Content-Type", "value": "text/javascript; charset=utf-8" }
+      ]
+    }
   ]
 }

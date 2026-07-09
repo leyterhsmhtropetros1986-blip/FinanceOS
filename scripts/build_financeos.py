@@ -233,6 +233,12 @@ def main():
     js = text[js_start + len('<script>\n'): text.rindex('</script>')].strip()
     body = re.search(r'<body>(.*?)</body>', text, re.S).group(1)
     body = re.sub(r'\s*<div class="toast-container" id="toast-container"></div>\s*', '\n', body).strip()
+    body = re.sub(
+        r'<script>\n/\* ═+[\s\S]*?</script>\s*',
+        '',
+        body,
+        count=1,
+    )
     head = text[: text.index('<style>')].rstrip()
 
     # ── CSS split ─────────────────────────────────────────
@@ -720,10 +726,19 @@ boot();
 <link rel="preload" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" as="style" />
 {css_links}
 <script>
-  if (typeof pdfjsLib !== 'undefined') {{
-    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
-    window.pdfjsLib = pdfjsLib;
+(function () {{
+  var p = location.pathname;
+  var base = '/';
+  if (p.indexOf('/FinanceOS') !== -1) {{
+    base = p.slice(0, p.indexOf('/FinanceOS') + '/FinanceOS'.length + 1);
   }}
+  if (!document.querySelector('base[data-app-base]')) {{
+    var b = document.createElement('base');
+    b.setAttribute('data-app-base', '1');
+    b.href = base;
+    document.head.prepend(b);
+  }}
+}})();
 </script>
 </head>
 <body>
@@ -749,18 +764,14 @@ Thumbs.db
 """)
 
     write('vercel.json', """{
-  "version": 2,
-  "builds": [{ "src": "index.html", "use": "@vercel/static" }],
-  "routes": [{ "src": "/(.*)", "dest": "/$1" }],
-  "headers": [
-    {
-      "source": "/js/(.*)",
-      "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
-    },
-    {
-      "source": "/css/(.*)",
-      "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
-    }
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "rewrites": [
+    { "source": "/css/:path*", "destination": "/FinanceOS/css/:path*" },
+    { "source": "/js/:path*", "destination": "/FinanceOS/js/:path*" },
+    { "source": "/assets/:path*", "destination": "/FinanceOS/assets/:path*" },
+    { "source": "/data/:path*", "destination": "/FinanceOS/data/:path*" },
+    { "source": "/FinanceOS", "destination": "/FinanceOS/index.html" },
+    { "source": "/", "destination": "/FinanceOS/index.html" }
   ]
 }
 """)
