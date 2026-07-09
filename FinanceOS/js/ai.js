@@ -198,7 +198,11 @@ export async function callClaudeAPI(contentBlock, canvases, onProgress) {
   }
 
   const processingMs = Math.round(performance.now() - t0);
-  if (data.usage) trackAIUsage(data.usage, s.model);
+  try {
+    if (data.usage) trackAIUsage(data.usage, s.model);
+  } catch (e) {
+    console.warn('AI usage tracking failed (non-fatal):', e);
+  }
 
   // Normalize response
   const invoicesArray = Array.isArray(parsed.invoices)
@@ -265,6 +269,25 @@ export function extractJsonFromText(text) {
   m = text.match(/\{[\s\S]*\}/);
   if (m) return m[0];
   return null;
+}
+
+/** Track token usage & cost — must never throw or block OCR */
+export function trackAIUsage(usage, model) {
+  try {
+    if (!usage) return;
+    const rates = {
+      'claude-sonnet-5':           { in: 3.0,  out: 15.0 },
+      'claude-haiku-4-5-20251001': { in: 1.0,  out: 5.0  },
+    };
+    const rate = rates[model] || rates['claude-sonnet-5'];
+    const cost = (usage.input_tokens / 1e6) * rate.in + (usage.output_tokens / 1e6) * rate.out;
+    state.settings.totalCost = (state.settings.totalCost || 0) + cost;
+    state.settings.totalCalls = (state.settings.totalCalls || 0) + 1;
+    saveSettings();
+    updateEngineStatus();
+  } catch (e) {
+    console.warn('trackAIUsage failed (non-fatal):', e);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════

@@ -402,14 +402,40 @@ let _saveTimer;
 
     ai_body = export_funcs(slice_js(js, 'function buildAIPrompt', '// PDF SPLITTING'), [
         'buildAIPrompt', 'runClaudeVisionOCR', 'runClaudeVisionOCRDirect', 'callClaudeAPI',
-        'extractJsonFromText', 'trackAIUsage',
+        'extractJsonFromText',
     ])
+    ai_body = re.sub(
+        r"  if \(data\.usage\) trackAIUsage\(data\.usage, s\.model\);\n",
+        "  try {\n    if (data.usage) trackAIUsage(data.usage, s.model);\n  } catch (e) {\n    console.warn('AI usage tracking failed (non-fatal):', e);\n  }\n",
+        ai_body,
+    )
+    track_ai = '''
+/** Track token usage & cost — must never throw or block OCR */
+export function trackAIUsage(usage, model) {
+  try {
+    if (!usage) return;
+    const rates = {
+      'claude-sonnet-5':           { in: 3.0,  out: 15.0 },
+      'claude-haiku-4-5-20251001': { in: 1.0,  out: 5.0  },
+    };
+    const rate = rates[model] || rates['claude-sonnet-5'];
+    const cost = (usage.input_tokens / 1e6) * rate.in + (usage.output_tokens / 1e6) * rate.out;
+    state.settings.totalCost = (state.settings.totalCost || 0) + cost;
+    state.settings.totalCalls = (state.settings.totalCalls || 0) + 1;
+    saveSettings();
+    updateEngineStatus();
+  } catch (e) {
+    console.warn('trackAIUsage failed (non-fatal):', e);
+  }
+}
+'''
     write('js/ai.js', f"""/** Claude Vision AI OCR */
 import {{ state }} from './state.js';
 import {{ downscaleCanvas, arrayBufferToBase64 }} from './storage.js';
 import {{ saveSettings, updateEngineStatus }} from './settings.js';
 
 {ai_body}
+{track_ai}
 """)
 
     settings_body = export_funcs(slice_js(js, '// SETTINGS PERSISTENCE', '// REAL OCR — Tesseract'), [

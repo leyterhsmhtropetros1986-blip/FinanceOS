@@ -480,17 +480,4 @@ export function downscaleCanvas(source, maxWidth) {
   return target;
 }
 
-function trackAIUsage(usage, model) {
-  const rates = {
-    'claude-sonnet-5':           { in: 3.0,  out: 15.0 },
-    'claude-haiku-4-5-20251001': { in: 1.0,  out: 5.0  },
-  };
-  const rate = rates[model] || rates['claude-sonnet-5'];
-  const cost = (usage.input_tokens / 1e6) * rate.in + (usage.output_tokens / 1e6) * rate.out;
-  state.settings.totalCost = (state.settings.totalCost || 0) + cost;
-  state.settings.totalCalls = (state.settings.totalCalls || 0) + 1;
-  saveSettings();
-  updateEngineStatus();
-}
-
 // ═══════════════════════════════════════════════════════════
