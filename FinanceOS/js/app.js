@@ -6,7 +6,7 @@ import { seedSuppliers, renderSuppliers, initSuppliers } from './suppliers.js';
 import { renderInvoices, initInvoices } from './invoices.js';
 import { renderAudit, initAuditView } from './audit.js';
 import { renderDashboard } from './dashboard.js';
-import { initUpload } from './upload.js';
+import { initUpload, recoverPendingDrafts } from './upload.js';
 import { initSearch } from './search.js';
 import { loadArchiveBrowser, initArchiveView } from './archive.js';
 import { updateReviewBadge } from './badges.js';
@@ -15,6 +15,7 @@ import { initKeyboardShortcuts } from './keyboard-shortcuts.js';
 import { state } from './state.js';
 import { $, toast } from './utils.js';
 import { warmupOcrWorker } from './ocr.js';
+import { warmupOcrWebWorker } from './ocr-worker-bridge.js';
 
 export function initNavigation() {
   // NAVIGATION
@@ -98,6 +99,7 @@ async function boot() {
   initSettings();
   initNavigation();
   initUpload();
+  recoverPendingDrafts().catch(() => {});
   initInvoices();
   initSuppliers();
   initAuditView();
@@ -128,6 +130,7 @@ async function boot() {
   updateReviewBadge();
   updateEngineStatus();
   warmupOcrWorker();
+  warmupOcrWebWorker();
 
   const isSandboxed = checkEnvironment();
   checkLibraries();

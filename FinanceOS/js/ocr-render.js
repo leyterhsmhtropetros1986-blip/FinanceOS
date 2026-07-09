@@ -4,6 +4,7 @@ import { throwIfAborted, trackCanvas } from './ocr-session.js';
 export const OCR_MAX_WIDTH = 1400;
 export const PREVIEW_SCALE = 1.0;
 export const MAX_OCR_PAGES = 1;
+export const VIRTUAL_PAGE_THRESHOLD = 8;
 
 /** Enough embedded PDF text → skip Tesseract entirely */
 export function embeddedTextIsSufficient(pages) {
@@ -23,14 +24,15 @@ export async function renderDocumentOnce(file, { onProgress, signal } = {}) {
   const buffer = await file.arrayBuffer();
   throwIfAborted(signal);
   const pdf = await window.pdfjsLib.getDocument({ data: buffer }).promise;
-  const maxPages = Math.min(pdf.numPages, 100);
+  const maxPages = Math.min(pdf.numPages, 500);
+  const useVirtual = maxPages > VIRTUAL_PAGE_THRESHOLD;
   const originalCanvases = [];
   const previewCanvases = [];
   const embeddedPages = [];
 
   for (let p = 1; p <= maxPages; p++) {
     throwIfAborted(signal);
-    onProgress?.(`Render σελ ${p}/${maxPages}…`, p / maxPages);
+    onProgress?.(`Text σελ ${p}/${maxPages}…`, p / maxPages);
     const page = await pdf.getPage(p);
 
     const viewportText = page.getViewport({ scale: 1 });
@@ -59,13 +61,28 @@ export async function renderDocumentOnce(file, { onProgress, signal } = {}) {
       source: 'pdf_embedded',
     });
 
-    const viewportPrev = page.getViewport({ scale: PREVIEW_SCALE });
-    const prevCanvas = document.createElement('canvas');
-    prevCanvas.width = viewportPrev.width;
-    prevCanvas.height = viewportPrev.height;
-    await page.render({ canvasContext: prevCanvas.getContext('2d'), viewport: viewportPrev }).promise;
-    trackCanvas(prevCanvas);
-    previewCanvases.push(prevCanvas);
+    if (!useVirtual) {
+      onProgress?.(`Render σελ ${p}/${maxPages}…`, p / maxPages);
+      const viewportPrev = page.getViewport({ scale: PREVIEW_SCALE });
+      const prevCanvas = document.createElement('canvas');
+      prevCanvas.width = viewportPrev.width;
+      prevCanvas.height = viewportPrev.height;
+      await page.render({ canvasContext: prevCanvas.getContext('2d'), viewport: viewportPrev }).promise;
+      trackCanvas(prevCanvas);
+      previewCanvases.push(prevCanvas);
+    }
+  }
+
+  if (useVirtual) {
+    onProgress?.('Virtual preview — lazy load σελίδες…');
+    const page1 = await pdf.getPage(1);
+    const vp1 = page1.getViewport({ scale: PREVIEW_SCALE });
+    const first = document.createElement('canvas');
+    first.width = vp1.width;
+    first.height = vp1.height;
+    await page1.render({ canvasContext: first.getContext('2d'), viewport: vp1 }).promise;
+    trackCanvas(first);
+    previewCanvases.push(first);
   }
 
   const skipOcr = embeddedTextIsSufficient(embeddedPages);
@@ -97,6 +114,9 @@ export async function renderDocumentOnce(file, { onProgress, signal } = {}) {
     pageCount: maxPages,
     skipOcr,
     buffer,
+    virtual: useVirtual,
+    pdfBuffer: useVirtual ? buffer : null,
+    previewScale: PREVIEW_SCALE,
   };
 }
 

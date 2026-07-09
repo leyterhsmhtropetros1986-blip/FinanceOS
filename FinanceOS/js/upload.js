@@ -30,10 +30,17 @@ import { initUploadEngine } from './upload-engine.js';
 import { categorizeInvoice } from './categories.js';
 import { appendTimelineEvent, renderTimelineHtml } from './timeline.js';
 import { boostSupplierFromLearning, recordCorrection } from './ocr-learning.js';
+import { mountVirtualPreview, isVirtualBundle, releasePdfDoc } from './preview-virtual.js';
+import { applyFieldValidation, clearFieldValidation, bindFieldValidationClear } from './field-validation.js';
+import {
+  initDraftAutoSave, scheduleReviewDraftSave, restoreDraftIfAny,
+  clearReviewDraft, listPendingDrafts,
+} from './draft-store.js';
 
 let uploadZoneEl;
 let fileInputEl;
 let _ocrJobSignal = null;
+let _virtualPreviewCtrl = null;
 
 // BATCH PROCESSING — bulk upload πολλών τιμολογίων
 // ═══════════════════════════════════════════════════════════
@@ -478,6 +485,26 @@ export function openBatchItemForReview(idx) {
 
 function applyPreviewFromResult(result) {
   if (!result) return;
+  const bundle = state.currentUpload?.renderBundle;
+  const container = $('#preview-container');
+  if (_virtualPreviewCtrl) {
+    _virtualPreviewCtrl.destroy?.();
+    _virtualPreviewCtrl = null;
+  }
+
+  if (isVirtualBundle(bundle) || result.virtual) {
+    const vb = bundle || result;
+    mountVirtualPreview(container, {
+      pdfBuffer: vb.pdfBuffer || vb.buffer,
+      pageCount: vb.pageCount || result.pageCount,
+      previewScale: vb.previewScale || 1,
+    }, state.previewZoom || 100).then((ctrl) => {
+      _virtualPreviewCtrl = ctrl;
+    }).catch((e) => console.warn('Virtual preview:', e));
+    $('#meta-pages').textContent = vb.pageCount || result.pageCount || 0;
+    return;
+  }
+
   if (result.previewDataUrls?.length) {
     renderPreview(result.previewDataUrls);
   } else if (result.canvases?.length) {
@@ -801,6 +828,7 @@ export async function handleFile(originalFile) {
     });
     state.currentUpload.renderBundle = renderBundle;
     state.currentUpload.canvases = renderBundle.previewCanvases || [];
+    computeFileHash(file).then((h) => { state.currentUpload.fileHash = h; }).catch(() => {});
     applyPreviewFromResult({
       canvases: renderBundle.previewCanvases,
       pageCount: renderBundle.pageCount,
@@ -1147,6 +1175,11 @@ export function populateReviewFromOCR(result, file, invoice) {
   } else {
     setUploadStatus('ocr_done');
   }
+
+  restoreDraftIfAny(invoice.id).then((draft) => {
+    if (draft) toast('✓ Επαναφορά αποθηκευμένου draft', 'ok');
+    scheduleReviewDraftSave();
+  });
 }
 
 function safeConf(v) {
@@ -1339,19 +1372,17 @@ export function renderSupplierCandidates(candidates) {
 
 
 export function showValidationErrors(errors) {
-  const box = $('#validation-errors');
-  box.innerHTML = '<div class="validation-errors-title">Απαιτούνται διορθώσεις</div><ul></ul>';
-  const ul = box.querySelector('ul');
-  for (const e of errors) {
-    const li = document.createElement('li');
-    li.textContent = `• ${e.message}`;
-    ul.appendChild(li);
-  }
-  box.hidden = false;
-  box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  applyFieldValidation(errors);
 }
 
 export function resetUploadView() {
+  if (_virtualPreviewCtrl) {
+    _virtualPreviewCtrl.destroy?.();
+    _virtualPreviewCtrl = null;
+  }
+  const buf = state.currentUpload?.renderBundle?.pdfBuffer;
+  if (buf) releasePdfDoc(buf);
+  clearFieldValidation();
   state.currentInvoiceId = null;
   state.currentUpload = null;
   $('#review').hidden = true;
@@ -1363,7 +1394,11 @@ export function resetUploadView() {
 
 export function applyPreviewZoom() {
   $('#preview-zoom-label').textContent = `${state.previewZoom}%`;
-  document.querySelectorAll('#preview-container .preview-page').forEach(c => {
+  if (_virtualPreviewCtrl?.updateZoom) {
+    _virtualPreviewCtrl.updateZoom(state.previewZoom);
+    return;
+  }
+  document.querySelectorAll('#preview-container .preview-page').forEach((c) => {
     c.style.width = `${state.previewZoom}%`;
   });
 }
@@ -1429,6 +1464,25 @@ export function initUpload() {
     },
     onMergeReady: (merged) => handleFile(merged),
   });
+
+  bindFieldValidationClear();
+  initDraftAutoSave();
+}
+
+/** Restore in-progress review drafts after page reload */
+export async function recoverPendingDrafts() {
+  const ids = await listPendingDrafts();
+  if (!ids.length) return;
+  for (const idStr of ids) {
+    const invoiceId = parseInt(idStr, 10);
+    const inv = state.invoices.find((i) => i.id === invoiceId && i.status === 'needs_review');
+    if (!inv) continue;
+    const draft = await restoreDraftIfAny(invoiceId);
+    if (draft) {
+      console.info(`✓ Restored draft for invoice #${invoiceId}`);
+      audit('draft', 'success', `Recovered draft for invoice #${invoiceId}`, { invoice_id: invoiceId });
+    }
+  }
 }
 
 async function onArchiveClick() {
@@ -1514,6 +1568,7 @@ async function onArchiveClick() {
     details: { filename, path: diskPath || archivedPath, on_disk: !!diskPath },
   });
   appendTimelineEvent(invoice.id, 'archived', filename);
+  await clearReviewDraft(invoice.id);
   toast(`Αρχειοθετήθηκε: ${filename}${diskPath ? ' (στον δίσκο)' : ''}`, 'ok');
   window.dispatchEvent(new CustomEvent('review-badge-update'));
   resetUploadView();

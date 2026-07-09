@@ -112,9 +112,16 @@ input:focus, select:focus, textarea:focus {
 }
 .preview-toolbar button:hover { background: var(--border); }
 .preview-container {
-  flex: 1; overflow: auto;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 12px;
-  display: flex; flex-direction: column; align-items: center; gap: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  background: #E8EAED;
+  min-height: 200px;
 }
 .preview-page {
   max-width: 100%;
@@ -156,5 +163,41 @@ input:focus, select:focus, textarea:focus {
 .validation-errors-title { font-weight: 600; color: var(--err); margin-bottom: 6px; font-size: 13px; }
 .validation-errors ul { list-style: none; padding: 0; margin: 0; }
 .validation-errors li { font-size: 12px; color: var(--err); padding: 2px 0; }
+
+.field--error input,
+.field--error select {
+  border-color: var(--err) !important;
+  box-shadow: 0 0 0 3px var(--err-soft) !important;
+}
+
+.field-error-msg {
+  font-size: 11px;
+  color: var(--err);
+  margin-top: 4px;
+}
+
+.virtual-preview-root {
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.virtual-page-slot {
+  margin-bottom: 12px;
+  border-radius: var(--r-md);
+  background: var(--bg-sunken);
+  padding: 8px;
+}
+
+.virtual-page-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 8px;
+}
+
+.virtual-page-error {
+  padding: 16px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
 
 .review-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
