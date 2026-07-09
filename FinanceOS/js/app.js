@@ -8,7 +8,7 @@ import { renderAudit, initAuditView } from './audit.js';
 import { renderDashboard } from './dashboard.js';
 import { initUpload } from './upload.js';
 import { initSearch } from './search.js';
-import { loadArchiveBrowser } from './archive.js';
+import { loadArchiveBrowser, initArchiveView } from './archive.js';
 import { updateReviewBadge } from './badges.js';
 import { state } from './state.js';
 import { $, toast } from './utils.js';
@@ -98,6 +98,7 @@ async function boot() {
   initSuppliers();
   initAuditView();
   initSearch();
+  initArchiveView();
 
   // 4. Restore archive root handle
   const handle = await idbLoadHandle();

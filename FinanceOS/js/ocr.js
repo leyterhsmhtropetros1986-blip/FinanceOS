@@ -1,6 +1,9 @@
 /** Tesseract OCR & field extraction */
 import { state } from './state.js';
-import { stripAccents, validateAfmChecksum, similarity, sapPrefixBoost, sapLengthBoost } from './helpers.js';
+import { stripAccents, validateAfmChecksum, similarity, sapPrefixBoost, sapLengthBoost, sapPrefixLabel, isValidSapDocNumber, normalizeForMatch } from './helpers.js';
+import { getOcrVariants } from './ocr-preprocess.js';
+import { extractPdfText } from './pdf-text.js';
+import { extractExtendedFields, mergeExtractionResults, mergeOcrPages } from './field-extractors.js';
 
 let _tesseractWorker = null;
 
@@ -60,44 +63,87 @@ export async function loadImageToCanvas(file) {
 
 export async function runRealOCR(file, onProgress, existingCanvases = null) {
   const t0 = performance.now();
+  const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
   const canvases = existingCanvases || await renderToCanvases(file, onProgress);
 
-  const worker = await getWorker(onProgress);
-  const pages = [];
-  for (let i = 0; i < canvases.length; i++) {
-    onProgress && onProgress(`OCR σελ ${i + 1}/${canvases.length}…`, i / canvases.length);
-    const { data } = await worker.recognize(canvases[i]);
-    pages.push({
-      page_number: i + 1,
-      text: data.text || '',
-      words: (data.words || []).map(w => ({
-        text: w.text,
-        confidence: Math.round(w.confidence || 0),
-        x: w.bbox ? w.bbox.x0 : 0,
-        y: w.bbox ? w.bbox.y0 : 0,
-        w: w.bbox ? (w.bbox.x1 - w.bbox.x0) : 0,
-        h: w.bbox ? (w.bbox.y1 - w.bbox.y0) : 0,
-      })),
-      width: canvases[i].width,
-      height: canvases[i].height,
-      mean_confidence: Math.round(data.confidence || 0),
-    });
+  // Strategy 1: PDF embedded text (high accuracy for digital PDFs)
+  let pdfTextData = null;
+  if (isPdf) {
+    try {
+      pdfTextData = await extractPdfText(file, onProgress);
+    } catch (e) {
+      console.warn('PDF text extraction failed:', e);
+    }
   }
 
+  // Strategy 2: Tesseract OCR with preprocessing + multi-pass
+  const worker = await getWorker(onProgress);
+  const allPageSets = [];
+  for (let i = 0; i < canvases.length; i++) {
+    onProgress && onProgress(`OCR σελ ${i + 1}/${canvases.length}…`, i / canvases.length);
+    const variants = getOcrVariants(canvases[i]);
+    const passPages = [];
+    for (const variant of variants) {
+      try {
+        const { data } = await worker.recognize(variant.canvas);
+        passPages.push({
+          page_number: i + 1,
+          text: data.text || '',
+          words: (data.words || []).map(w => ({
+            text: w.text,
+            confidence: Math.round(w.confidence || 0),
+            x: w.bbox ? w.bbox.x0 : 0,
+            y: w.bbox ? w.bbox.y0 : 0,
+            w: w.bbox ? (w.bbox.x1 - w.bbox.x0) : 0,
+            h: w.bbox ? (w.bbox.y1 - w.bbox.y0) : 0,
+          })),
+          width: variant.canvas.width,
+          height: variant.canvas.height,
+          mean_confidence: Math.round(data.confidence || 0),
+          pass: variant.label,
+        });
+      } catch (e) {
+        console.warn(`OCR pass ${variant.label} failed:`, e);
+      }
+    }
+    if (passPages.length) allPageSets.push(mergeOcrPages([passPages]));
+  }
+  const pages = mergeOcrPages(allPageSets);
   const processingMs = Math.round(performance.now() - t0);
   const fullText = pages.map(p => p.text).join('\n');
-  const extracted = extractAllFields(pages, fullText);
+  const meanOcrConf = pages.length
+    ? Math.round(pages.reduce((s, p) => s + (p.mean_confidence || 0), 0) / pages.length)
+    : 0;
+
+  const ocrExtracted = extractAllFields(pages, fullText);
+  ocrExtracted._meanOcrConfidence = meanOcrConf;
+
+  let pdfExtracted = null;
+  if (pdfTextData?.fullText) {
+    pdfExtracted = extractAllFields(pdfTextData.pages, pdfTextData.fullText);
+    pdfExtracted._meanOcrConfidence = 95;
+  }
+
+  // Merge: prefer PDF text when OCR confidence is low
+  let extracted;
+  if (pdfExtracted && meanOcrConf < 65) {
+    extracted = mergeExtractionResults(pdfExtracted, ocrExtracted);
+  } else {
+    extracted = mergeExtractionResults(ocrExtracted, pdfExtracted);
+  }
 
   return {
     filename: file.name,
     fileSize: file.size,
     pageCount: pages.length,
     processingMs,
-    engine: 'tesseract.js (browser)',
+    engine: pdfTextData ? 'tesseract.js + pdf text layer' : 'tesseract.js (browser)',
     fullText,
+    pdfText: pdfTextData?.fullText || null,
     extracted,
     canvases,
     supplierHint: extracted.supplier_name_hint,
+    ocrConfidence: meanOcrConf,
   };
 }
 
@@ -121,7 +167,11 @@ export async function renderToCanvases(file, onProgress) {
 const AFM_KEYWORDS = ['ΑΦΜ', 'Α.Φ.Μ', 'AFM', 'VAT', 'TAX ID', 'TIN'];
 const INVOICE_KEYWORDS = ['ΑΡΙΘΜΟΣ ΤΙΜΟΛΟΓΙΟΥ', 'ΑΡ. ΤΙΜΟΛΟΓΙΟΥ', 'ΤΙΜΟΛΟΓΙΟ', 'INVOICE NO', 'INVOICE #', 'INVOICE NUMBER', 'ΠΑΡΑΣΤΑΤΙΚΟ', 'Τ.Δ.Α', 'Δ.Α.Τ'];
 const DATE_KEYWORDS = ['ΗΜΕΡΟΜΗΝΙΑ', 'ΗΜ/ΝΙΑ', 'DATE', 'ΕΚΔΟΣΗ'];
-const SAP_KEYWORDS = ['SAP DOC', 'SAP', 'DOC NO', 'DOC NUMBER', 'DOCUMENT NUMBER', 'ΑΡ. ΕΓΓΡΑΦΗΣ', 'ΑΡΙΘΜΟΣ ΕΓΓΡΑΦΗΣ', 'ΚΑΤΑΧΩΡΗΣΗ'];
+const SAP_KEYWORDS = [
+  'SAP DOC', 'SAP DOCUMENT', 'SAP', 'DOC NO', 'DOC NUMBER', 'DOCUMENT NUMBER',
+  'ΑΡ. ΕΓΓΡΑΦΗΣ', 'ΑΡΙΘΜΟΣ ΕΓΓΡΑΦΗΣ', 'ΚΑΤΑΧΩΡΗΣΗ', 'ΚΑΤΑΧΩΡΙΣΗ', 'ΕΓΓΡΑΦΟ',
+  'FI DOC', 'MATERIAL DOC', 'ΧΕΙΡΟΓΡΑΦΟ', 'HANDWRITTEN',
+];
 
 export function extractAfm(fullText) {
   const upper = stripAccents(fullText.toUpperCase());
@@ -261,59 +311,78 @@ export function extractSapDocCandidates(pages, fullText) {
 
   const contextBoost = (surrounding) => {
     const upper = stripAccents(surrounding.toUpperCase());
-    return SAP_KEYWORDS.some(kw => upper.includes(kw)) ? 20 : 0;
+    return SAP_KEYWORDS.some(kw => upper.includes(kw)) ? 22 : 0;
   };
 
+  const addCandidate = (num, score, meta) => {
+    if (!isValidSapDocNumber(num)) return;
+    const clean = String(num).replace(/\D/g, '');
+    if (!candidates.has(clean) || candidates.get(clean).confidence < score) {
+      candidates.set(clean, { value: clean, confidence: Math.min(99, score), ...meta });
+    }
+  };
+
+  // Pass 1: keyword-adjacent numbers in full text (works for PDF text layer)
+  const upperFull = stripAccents((fullText || '').toUpperCase());
+  for (const kw of SAP_KEYWORDS) {
+    let idx = 0;
+    while ((idx = upperFull.indexOf(kw, idx)) !== -1) {
+      const win = fullText.slice(idx, idx + kw.length + 80);
+      for (const m of win.matchAll(numberRe)) {
+        addCandidate(m[1], 75 + sapPrefixBoost(m[1]) + sapLengthBoost(m[1]), {
+          source: 'context_match', page: 1,
+          reason: `near "${kw}", prefix ${sapPrefixLabel(m[1])}`,
+        });
+      }
+      idx += kw.length;
+    }
+  }
+
   for (const page of pages) {
-    // Text-based extraction
+    const source = page.source === 'pdf_embedded' ? 'pdf_text' : 'ocr_tesseract';
+
     for (const m of page.text.matchAll(numberRe)) {
       const num = m[1];
       const start = Math.max(0, m.index - 60);
       const end = Math.min(page.text.length, m.index + num.length + 60);
       const surrounding = page.text.slice(start, end);
-      // Find word_box confidence for this number
       const wb = page.words.find(w => w.text.replace(/\D/g, '') === num);
-      const ocrConf = wb ? wb.confidence : 50;
+      const ocrConf = wb ? wb.confidence : (source === 'pdf_text' ? 90 : 50);
 
-      const score = Math.min(99,
-        Math.round(ocrConf * 0.4)
+      const score = Math.round(ocrConf * 0.35)
         + sapPrefixBoost(num)
         + sapLengthBoost(num)
         + contextBoost(surrounding)
-      );
-      const reason = [
-        `ocr_conf ${ocrConf}`,
-        sapPrefixBoost(num) > 0 ? `prefix ${num.startsWith('1900') ? '1900' : num.startsWith('1700') ? '1700' : num.slice(0, 2)}` : null,
-        contextBoost(surrounding) ? 'near keyword' : null,
-      ].filter(Boolean).join(', ');
+        + (source === 'pdf_text' ? 8 : 0);
 
-      if (!candidates.has(num) || candidates.get(num).confidence < score) {
-        candidates.set(num, { value: num, confidence: score, source: 'ocr_tesseract', page: page.page_number, reason });
-      }
+      addCandidate(num, score, {
+        source, page: page.page_number,
+        reason: [
+          source, `ocr_conf ${ocrConf}`,
+          sapPrefixBoost(num) > 0 ? `prefix ${sapPrefixLabel(num)}` : null,
+          contextBoost(surrounding) ? 'near keyword' : null,
+        ].filter(Boolean).join(', '),
+      });
     }
 
-    // Region scan: top-right quadrant (όπου γράφουν συνήθως το χειρόγραφο SAP Doc No)
+    // Region scan: top area (handwritten SAP doc often top-right or top-center)
     for (const wb of page.words) {
       const digits = wb.text.replace(/\D/g, '');
-      if (!(digits.length >= 6 && digits.length <= 12)) continue;
-      if (wb.x < page.width * 0.5 || wb.y > page.height * 0.4) continue;
-      const score = Math.min(99,
-        Math.round(wb.confidence * 0.5)
+      if (!isValidSapDocNumber(digits)) continue;
+      if (wb.y > page.height * 0.45) continue;
+      const regionBonus = wb.x >= page.width * 0.45 ? 12 : 6;
+      const score = Math.round(wb.confidence * 0.45)
         + sapPrefixBoost(digits)
         + sapLengthBoost(digits)
-        + 10  // region bonus
-      );
-      if (!candidates.has(digits) || candidates.get(digits).confidence < score) {
-        candidates.set(digits, {
-          value: digits, confidence: score,
-          source: 'region_scan', page: page.page_number,
-          reason: `top-right, ocr_conf ${wb.confidence}`,
-        });
-      }
+        + regionBonus;
+      addCandidate(digits, score, {
+        source: 'region_scan', page: page.page_number,
+        reason: `top region, ocr_conf ${wb.confidence}, prefix ${sapPrefixLabel(digits)}`,
+      });
     }
   }
 
-  return [...candidates.values()].sort((a, b) => b.confidence - a.confidence).slice(0, 10);
+  return [...candidates.values()].sort((a, b) => b.confidence - a.confidence).slice(0, 15);
 }
 
 export function extractSupplierNameHint(pages) {
@@ -342,6 +411,7 @@ export function extractAllFields(pages, fullText) {
   const dt = extractDate(fullText);
   const sapCands = extractSapDocCandidates(pages, fullText);
   const sup = extractSupplierNameHint(pages);
+  const extended = extractExtendedFields(pages, fullText);
 
   return {
     afm: afm.value,
@@ -353,8 +423,25 @@ export function extractAllFields(pages, fullText) {
     confidence_invoice_no: inv.confidence,
     confidence_date: dt.confidence,
     confidence_sap_doc: sapCands[0] ? sapCands[0].confidence : 0,
-    confidence_supplier: 0,  // filled after matching
+    confidence_supplier: sup.confidence,
     sap_doc_candidates: sapCands,
+    total_amount: extended.total_amount,
+    net_amount: extended.net_amount,
+    vat_amount: extended.vat_amount,
+    vat_rate: extended.vat_rate,
+    currency: extended.currency,
+    purchase_order: extended.purchase_order,
+    reference: extended.reference,
+    container: extended.container,
+    bill_of_lading: extended.bill_of_lading,
+    confidence_total: extended.confidence_total,
+    confidence_net: extended.confidence_net,
+    confidence_vat: extended.confidence_vat,
+    confidence_currency: extended.confidence_currency,
+    confidence_po: extended.confidence_po,
+    confidence_reference: extended.confidence_reference,
+    confidence_container: extended.confidence_container,
+    confidence_bl: extended.confidence_bl,
   };
 }
 

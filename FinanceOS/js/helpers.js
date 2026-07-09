@@ -51,15 +51,33 @@ export function similarity(a, b) {
 
 // ═══════════════════════════════════════════════════════════
 
-// SAP DOC NUMBER SCORING
+// SAP DOC NUMBER SCORING — known prefixes get a boost, but ANY 6–12 digit number can match
 // ═══════════════════════════════════════════════════════════
-export const SAP_PREFIXES = ['1900', '1700', '20', '60'];
+export const SAP_PREFIXES = ['1900', '1700', '510', '60', '20', '40', '30', '80', '90'];
+
+export function isValidSapDocNumber(num) {
+  const clean = String(num || '').replace(/\D/g, '');
+  return clean.length >= 6 && clean.length <= 12;
+}
 
 export function sapPrefixBoost(number) {
+  const n = String(number || '').replace(/\D/g, '');
+  if (!isValidSapDocNumber(n)) return 0;
   for (const p of SAP_PREFIXES) {
-    if (number.startsWith(p)) return 25 + (p.length * 2);  // 1900→33, 20→29
+    if (n.startsWith(p)) return 25 + (p.length * 2);
   }
+  // Unknown prefix — still valid SAP format, modest boost
+  if (n.length >= 8 && n.length <= 12) return 12;
+  if (n.length >= 6) return 8;
   return 0;
+}
+
+export function sapPrefixLabel(number) {
+  const n = String(number || '').replace(/\D/g, '');
+  for (const p of SAP_PREFIXES) {
+    if (n.startsWith(p)) return p;
+  }
+  return n.length >= 2 ? n.slice(0, 2) + '…' : 'other';
 }
 export function sapLengthBoost(number) {
   const L = number.length;

@@ -42,8 +42,10 @@ js/audit.js
 js/export.js
 js/settings.js
 js/search.js
-js/badges.js
-js/notifications.js
+css/archive.css
+js/ocr-preprocess.js
+js/pdf-text.js
+js/field-extractors.js
 LIST
 )
 

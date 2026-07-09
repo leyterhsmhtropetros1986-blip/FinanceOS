@@ -155,6 +155,14 @@ export async function processBatchItem(item, useAI) {
       total_amount: extracted.total_amount,
       currency: extracted.currency || 'EUR',
       vat_rate: extracted.vat_rate,
+      purchase_order: extracted.purchase_order,
+      reference: extracted.reference,
+      container: extracted.container,
+      bill_of_lading: extracted.bill_of_lading,
+      confidence_afm: extracted.confidence_afm,
+      confidence_invoice_no: extracted.confidence_invoice_no,
+      confidence_sap_doc: extracted.confidence_sap_doc,
+      confidence_date: extracted.confidence_date,
     });
 
     // Απόφαση
