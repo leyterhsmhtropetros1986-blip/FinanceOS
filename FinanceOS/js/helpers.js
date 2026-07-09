@@ -51,36 +51,39 @@ export function similarity(a, b) {
 
 // ═══════════════════════════════════════════════════════════
 
-// SAP DOC NUMBER SCORING — prefix boost only, NEVER reject unknown prefixes
+// SAP DOC NUMBER — χειρόγραφος αριθμός με στυλό, πάντα ένα από τα prefixes
 // ═══════════════════════════════════════════════════════════
-const _SAP_4DIGIT = ['1700', '1800', '1900', '2000', '2100', '2200', '2300', '2400', '2500'];
-const _SAP_2DIGIT = Array.from({ length: 50 }, (_, i) => String(20 + i)); // 20–69
-export const SAP_PREFIXES = [..._SAP_4DIGIT, ..._SAP_2DIGIT, '510', '500'];
+/** Επιτρεπόμενα prefixes (σειρά: μεγαλύτερο πρώτο για matching) */
+export const SAP_HANDWRITTEN_PREFIXES = ['1900', '1700', '510'];
+export const SAP_PREFIXES = SAP_HANDWRITTEN_PREFIXES;
 
-export function isValidSapDocNumber(num) {
+export function hasAllowedSapPrefix(num) {
+  const n = String(num || '').replace(/\D/g, '');
+  return SAP_HANDWRITTEN_PREFIXES.some((p) => n.startsWith(p));
+}
+
+export function isValidSapDocNumber(num, { requirePrefix = true } = {}) {
   const clean = String(num || '').replace(/\D/g, '');
-  return clean.length >= 6 && clean.length <= 12;
+  if (clean.length < 6 || clean.length > 12) return false;
+  if (requirePrefix && !hasAllowedSapPrefix(clean)) return false;
+  return true;
 }
 
 export function sapPrefixBoost(number) {
   const n = String(number || '').replace(/\D/g, '');
   if (!isValidSapDocNumber(n)) return 0;
-  const sorted = [...SAP_PREFIXES].sort((a, b) => b.length - a.length);
-  for (const p of sorted) {
-    if (n.startsWith(p)) return 25 + (p.length * 2);
+  for (const p of SAP_HANDWRITTEN_PREFIXES) {
+    if (n.startsWith(p)) return 30 + p.length * 2;
   }
-  if (n.length >= 8 && n.length <= 12) return 12;
-  if (n.length >= 6) return 8;
   return 0;
 }
 
 export function sapPrefixLabel(number) {
   const n = String(number || '').replace(/\D/g, '');
-  const sorted = [...SAP_PREFIXES].sort((a, b) => b.length - a.length);
-  for (const p of sorted) {
+  for (const p of SAP_HANDWRITTEN_PREFIXES) {
     if (n.startsWith(p)) return p;
   }
-  return n.length >= 2 ? n.slice(0, 2) + '…' : 'other';
+  return 'invalid';
 }
 export function sapLengthBoost(number) {
   const L = number.length;

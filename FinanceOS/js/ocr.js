@@ -1,6 +1,10 @@
 /** Tesseract OCR & field extraction */
 import { state } from './state.js';
-import { stripAccents, validateAfmChecksum, similarity, sapPrefixBoost, sapLengthBoost, sapPrefixLabel, isValidSapDocNumber, normalizeForMatch } from './helpers.js';
+import {
+  stripAccents, validateAfmChecksum, similarity, sapPrefixBoost, sapLengthBoost,
+  sapPrefixLabel, isValidSapDocNumber, hasAllowedSapPrefix, SAP_HANDWRITTEN_PREFIXES,
+  normalizeForMatch,
+} from './helpers.js';
 import { extractExtendedFields } from './field-extractors.js';
 import { fuzzyFindSupplierInText } from './ocr-confidence.js';
 
@@ -292,22 +296,35 @@ export function extractDate(fullText) {
   return { value: null, confidence: 0 };
 }
 
+/** Χειρόγραφος SAP — μόνο 1900 / 1700 / 510 + 6–12 ψηφία συνολικά */
+const SAP_HANDWRITTEN_RE = /(?<!\d)(1900\d{6,8}|1700\d{6,8}|510\d{5,9})(?!\d)/g;
+
 export function extractSapDocCandidates(pages, fullText) {
   const candidates = new Map();
-  const numberRe = /(?<!\d)(\d{6,12})(?!\d)/g;
+  const numberRe = SAP_HANDWRITTEN_RE;
 
   const contextBoost = (surrounding) => {
     const upper = stripAccents(surrounding.toUpperCase());
-    return SAP_KEYWORDS.some(kw => upper.includes(kw)) ? 22 : 0;
+    return SAP_KEYWORDS.some((kw) => upper.includes(kw)) ? 22 : 0;
   };
 
   const addCandidate = (num, score, meta) => {
-    if (!isValidSapDocNumber(num)) return;
     const clean = String(num).replace(/\D/g, '');
+    if (!isValidSapDocNumber(clean)) return;
+    if (!hasAllowedSapPrefix(clean)) return;
     if (!candidates.has(clean) || candidates.get(clean).confidence < score) {
       candidates.set(clean, { value: clean, confidence: Math.min(99, score), ...meta });
     }
   };
+
+  // Pass 0: explicit handwritten prefixes in full text (highest priority)
+  for (const m of (fullText || '').matchAll(SAP_HANDWRITTEN_RE)) {
+    addCandidate(m[1], 92 + sapLengthBoost(m[1]), {
+      source: 'handwritten_prefix',
+      page: 1,
+      reason: `χειρόγραφο prefix ${sapPrefixLabel(m[1])}`,
+    });
+  }
 
   // Pass 1: keyword-adjacent numbers in full text (works for PDF text layer)
   const upperFull = stripAccents((fullText || '').toUpperCase());
@@ -558,6 +575,11 @@ export function validateForArchive(payload) {
     const clean = payload.sap_doc_number.replace(/[^0-9]/g, '');
     if (clean.length < 6 || clean.length > 12) {
       errors.push({ field: 'sap_doc_number', message: `Το SAP Doc Number πρέπει να έχει 6–12 ψηφία (βρέθηκαν ${clean.length}).` });
+    } else if (!hasAllowedSapPrefix(clean)) {
+      errors.push({
+        field: 'sap_doc_number',
+        message: `Το SAP Doc πρέπει να ξεκινά με ${SAP_HANDWRITTEN_PREFIXES.join(', ')} (χειρόγραφο με στυλό).`,
+      });
     }
   }
   if (payload.invoice_date) {

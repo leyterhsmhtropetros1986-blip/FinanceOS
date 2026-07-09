@@ -1,7 +1,7 @@
 /** Upload, batch OCR, review panel */
 import { state } from './state.js';
 import { $, toast, fmtISODate, confidenceClass, escapeHtml } from './utils.js';
-import { validateAfmChecksum } from './helpers.js';
+import { validateAfmChecksum, hasAllowedSapPrefix } from './helpers.js';
 import { audit } from './audit.js';
 import {
   verifyPermission, writeToDisk, resolveSupplierFolder, findDuplicateInvoice,
@@ -287,6 +287,7 @@ export async function processBatchItem(item, useAI) {
       extracted.invoice_date &&
       extracted.sap_doc_number &&
       /^\d{6,12}$/.test(String(extracted.sap_doc_number).replace(/\D/g, '')) &&
+      hasAllowedSapPrefix(extracted.sap_doc_number) &&
       (extracted.confidence_sap_doc ?? 0) >= 70;
 
     // Πρώτα έλεγξε αν υπάρχει ήδη (duplicate)
@@ -1036,7 +1037,7 @@ export function showReviewPanel(file, invoice, canvases, wrapper) {
   $('#hint-supplier').className = 'field-hint';
   $('#hint-afm').textContent = '';
   $('#hint-afm').className = 'field-hint';
-  $('#hint-sap').textContent = 'Γράψε το χειρόγραφο SAP Doc No που βλέπεις πάνω στο τιμολόγιο';
+  $('#hint-sap').textContent = 'Χειρόγραφο με στυλό — ξεκινά πάντα με 1900, 510 ή 1700';
   $('#hint-sap').className = 'field-hint';
 
   $('#validation-errors').hidden = true;
