@@ -13,10 +13,104 @@ import {
   matchSupplier, validateForArchive, buildArchiveFilename,
 } from './ocr.js';
 import { renderToCanvases } from './ocr.js';
-import { sanitizeAgainstOcrText } from './ocr-confidence.js';
 
 let uploadZoneEl;
 let fileInputEl;
+
+const AI_TIMEOUT_MS = 60000;
+const OCR_TIMEOUT_MS = 180000;
+
+/**
+ * Unified extraction — mirrors legacy monolith HTML behavior:
+ * - AI enabled → Claude Vision primary (fast, ~95% on Greek invoices)
+ * - AI fails / disabled → multi-pass Tesseract + PDF text pipeline
+ */
+async function runInvoiceExtraction(file, { useAI, existingCanvases = null, onProgress, wrapper, skipOcrEnrich = false } = {}) {
+  const report = (msg) => onProgress?.(msg);
+
+  if (useAI) {
+    try {
+      report('Claude Vision — αποστολή…');
+      const aiResult = await Promise.race([
+        runClaudeVisionOCRDirect(file, (msg) => report(`AI: ${msg}`)),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('AI timeout (60s)')), AI_TIMEOUT_MS)),
+      ]);
+      if (wrapper) aiResult.wrapper = wrapper;
+      aiResult.extractedList = aiResult.extractedList || [aiResult.extracted];
+
+      if (!skipOcrEnrich) {
+        try {
+          report('OCR enrich — γέμισμα κενών πεδίων…');
+          const ocrResult = await Promise.race([
+            runOcrPipeline(file, { existingCanvases, onProgress: () => {} }),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('OCR enrich timeout')), OCR_TIMEOUT_MS)),
+          ]);
+          return mergeAiPrimaryWithOcr(aiResult, ocrResult);
+        } catch (e) {
+          console.warn('OCR enrich skipped (non-fatal):', e);
+        }
+      }
+      return aiResult;
+    } catch (aiErr) {
+      console.warn('AI primary failed, OCR fallback:', aiErr);
+      report(`Claude απέτυχε — OCR fallback…`);
+    }
+  }
+
+  report('OCR (multi-pass)…');
+  const result = await Promise.race([
+    runOcrPipeline(file, { existingCanvases, onProgress: report }),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('OCR timeout (3 min)')), OCR_TIMEOUT_MS)),
+  ]);
+  if (wrapper) result.wrapper = wrapper;
+  result.extractedList = result.extractedList || [result.extracted];
+  return result;
+}
+
+/** AI results stay primary; OCR only fills gaps (never overwrites high-confidence AI) */
+function mergeAiPrimaryWithOcr(aiResult, ocrResult) {
+  const aiExt = { ...aiResult.extracted };
+  const ocrExt = ocrResult.extracted || {};
+
+  const fillIfMissing = (field, confField, minOcr = 70) => {
+    if (aiExt[field] && (aiExt[confField] || 0) >= minOcr) return;
+    if (ocrExt[field] && (ocrExt[confField] || 0) >= minOcr) {
+      aiExt[field] = ocrExt[field];
+      aiExt[confField] = ocrExt[confField];
+    }
+  };
+
+  fillIfMissing('afm', 'confidence_afm', 75);
+  fillIfMissing('invoice_number', 'confidence_invoice_no', 70);
+  fillIfMissing('invoice_date', 'confidence_date', 70);
+  fillIfMissing('sap_doc_number', 'confidence_sap_doc', 65);
+  if (!aiExt.supplier_name_hint && ocrExt.supplier_name_hint) {
+    aiExt.supplier_name_hint = ocrExt.supplier_name_hint;
+  }
+
+  const candMap = new Map();
+  for (const c of [...(aiExt.sap_doc_candidates || []), ...(ocrExt.sap_doc_candidates || [])]) {
+    const prev = candMap.get(c.value);
+    if (!prev || c.confidence > prev.confidence) candMap.set(c.value, c);
+  }
+  if (candMap.size) {
+    aiExt.sap_doc_candidates = [...candMap.values()].sort((a, b) => b.confidence - a.confidence).slice(0, 15);
+    if (!aiExt.sap_doc_number && aiExt.sap_doc_candidates[0]) {
+      aiExt.sap_doc_number = aiExt.sap_doc_candidates[0].value;
+      aiExt.confidence_sap_doc = aiExt.sap_doc_candidates[0].confidence;
+    }
+  }
+
+  return {
+    ...aiResult,
+    extracted: aiExt,
+    extractedList: [aiExt],
+    fullText: ocrResult.fullText || aiResult.fullText || '',
+    engine: `${aiResult.engine} + OCR enrich`,
+    canvases: ocrResult.canvases?.length ? ocrResult.canvases : aiResult.canvases,
+    processingMs: (aiResult.processingMs || 0) + (ocrResult.processingMs || 0),
+  };
+}
 
 // BATCH PROCESSING — bulk upload πολλών τιμολογίων
 // ═══════════════════════════════════════════════════════════
@@ -102,23 +196,10 @@ export async function processBatchItem(item, useAI) {
   const originalBytes = await file.arrayBuffer();
   const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
 
-  // 2. OCR — always pipeline-first (AI never blocks)
+  // 2. OCR — AI-primary όταν ενεργό (ίδιο με legacy HTML), αλλιώς multi-pass pipeline
   let result;
   try {
-    result = await runOcrPipeline(file, { onProgress: () => {} });
-    result.extractedList = result.extractedList || [result.extracted];
-    if (useAI && result.fullText) {
-      try {
-        const aiResult = await Promise.race([
-          runClaudeVisionOCRDirect(file, () => {}),
-          new Promise((_, rej) => setTimeout(() => rej(new Error('AI timeout')), 60000)),
-        ]);
-        const aiExt = sanitizeAgainstOcrText(aiResult.extracted, result.fullText);
-        result.extracted = { ...result.extracted, ...pickOcrVerifiedFields(aiExt, result.extracted) };
-      } catch (e) {
-        console.warn('Batch AI assist skipped:', e);
-      }
-    }
+    result = await runInvoiceExtraction(file, { useAI, onProgress: () => {}, skipOcrEnrich: useAI });
   } catch (e) {
     item.status = 'failed';
     item.error = e.message;
@@ -676,7 +757,7 @@ export async function handleFile(originalFile) {
     return;
   }
 
-  // Step 2: OCR pipeline (always — fields come from OCR/PDF text, not AI guessing)
+  // Step 2: AI-primary αν ενεργό (legacy monolith HTML), αλλιώς multi-pass OCR
   const useAI = state.settings.provider === 'anthropic' && state.settings.apiKey;
 
   state.currentInvoiceId = invoice.id;
@@ -684,82 +765,71 @@ export async function handleFile(originalFile) {
   showReviewPanel(file, invoice, [], wrapper);
   $('#upload-progress').hidden = true;
   $('#review').hidden = false;
-  updateProgressInReview('Rendering…');
 
-  let canvases = [];
-  try {
-    canvases = await renderToCanvases(file, (msg) => updateProgressInReview(msg));
-    state.currentUpload.canvases = canvases;
-    renderPreview(canvases);
-    $('#meta-pages').textContent = canvases.length;
-  } catch (e) {
-    console.warn('Preview render failed:', e);
+  if (useAI) {
+    renderToCanvases(file, () => {}).then((canvases) => {
+      state.currentUpload.canvases = canvases;
+      renderPreview(canvases);
+      $('#meta-pages').textContent = canvases.length;
+    }).catch((err) => {
+      console.warn('Preview render failed:', err);
+      $('#preview-container').innerHTML =
+        `<div class="preview-loading">Το preview δεν μπόρεσε να γίνει render.<br><small>${escapeHtml(err.message)}</small></div>`;
+    });
+  } else {
+    updateProgressInReview('Rendering…');
+    try {
+      const canvases = await renderToCanvases(file, (msg) => updateProgressInReview(msg));
+      state.currentUpload.canvases = canvases;
+      renderPreview(canvases);
+      $('#meta-pages').textContent = canvases.length;
+    } catch (e) {
+      invoice.status = 'error';
+      invoice.status_message = `Αποτυχία rendering: ${e.message}`;
+      audit('render', 'failure', e.message, { invoice_id: invoice.id });
+      updateProgressInReview(`Preview απέτυχε: ${e.message}`, true);
+      toast('Δεν μπόρεσα να ανοίξω το αρχείο. Ενεργοποίησε AI OCR για να παρακάμψεις το PDF.js.', 'err');
+      return;
+    }
   }
 
-  let result;
   try {
-    updateProgressInReview('OCR — εξαγωγή πεδίων…');
-    result = await runOcrPipeline(file, {
-      existingCanvases: canvases.length ? canvases : null,
+    const canvases = state.currentUpload.canvases?.length ? state.currentUpload.canvases : null;
+    const result = await runInvoiceExtraction(file, {
+      useAI,
+      existingCanvases: useAI ? null : canvases,
       onProgress: (msg) => updateProgressInReview(msg),
+      wrapper,
     });
-    if (wrapper) result.wrapper = wrapper;
 
-    // Optional AI assist: only merge values that exist in OCR text
-    if (useAI && result.success !== false) {
-      try {
-        updateProgressInReview('AI assist (επαλήθευση με OCR κείμενο)…');
-        const aiResult = await Promise.race([
-          runClaudeVisionOCRDirect(file, (msg) => updateProgressInReview(`AI: ${msg}`)),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('AI timeout (60s)')), 60000)),
-        ]);
-        const aiExt = sanitizeAgainstOcrText(aiResult.extracted, result.fullText || aiResult.fullText || '');
-        result.extracted = { ...result.extracted, ...pickOcrVerifiedFields(aiExt, result.extracted) };
-        result.engine = `${result.engine} + AI-verified`;
-      } catch (aiErr) {
-        console.warn('AI assist skipped (non-fatal):', aiErr);
-        updateProgressInReview('AI assist skipped — χρησιμοποιήθηκε OCR μόνο');
-      }
+    if (result.canvases?.length && !state.currentUpload.canvases?.length) {
+      state.currentUpload.canvases = result.canvases;
+      renderPreview(result.canvases);
+      $('#meta-pages').textContent = result.canvases.length;
     }
 
     state.currentUpload.result = result;
     populateReviewFromOCR(result, file, invoice);
     audit('ocr', 'success', `${result.engine} · ${result.processingMs}ms`,
       { invoice_id: invoice.id, details: { engine: result.engine, errors: result.errors } });
-    if (result.extracted?.afm || result.extracted?.sap_doc_number) {
+
+    if (useAI && result.engine?.includes('Claude')) {
+      toast(`✓ Claude εξήγαγε τα πεδία σε ${result.processingMs}ms`, 'ok');
+    } else if (result.extracted?.afm || result.extracted?.sap_doc_number) {
       toast(`✓ OCR ολοκληρώθηκε σε ${result.processingMs}ms`, 'ok');
     } else {
       toast('OCR ολοκληρώθηκε — έλεγξε τα πεδία χειροκίνητα', 'warn');
     }
   } catch (e) {
-    console.error('OCR pipeline error:', e);
+    console.error('Extraction error:', e);
     invoice.status = 'needs_review';
     invoice.status_message = e.message;
     audit('ocr', 'failure', e.message, { invoice_id: invoice.id });
-    updateProgressInReview(`OCR: ${e.message} — συμπλήρωσε χειροκίνητα`, true);
-    $('#mean-confidence').textContent = 'OCR failed — manual entry';
-    toast(`OCR σφάλμα: ${e.message}`, 'err');
+    updateProgressInReview(`${e.message} — συμπλήρωσε χειροκίνητα`, true);
+    $('#mean-confidence').textContent = 'extraction failed — manual entry';
+    toast(`Σφάλμα: ${e.message}`, 'err');
     window.dispatchEvent(new CustomEvent('review-badge-update'));
   }
-}
-
-/** Merge AI fields only when they improve OCR and pass text verification */
-function pickOcrVerifiedFields(aiExt, ocrExt) {
-  const out = { ...ocrExt };
-  const fields = [
-    ['afm', 'confidence_afm'], ['invoice_number', 'confidence_invoice_no'],
-    ['invoice_date', 'confidence_date'], ['sap_doc_number', 'confidence_sap_doc'],
-  ];
-  for (const [f, c] of fields) {
-    if (aiExt[f] && (aiExt[c] || 0) > (ocrExt[c] || 0)) {
-      out[f] = aiExt[f];
-      out[c] = aiExt[c];
-    }
-  }
-  if (aiExt.sap_doc_candidates?.length) {
-    out.sap_doc_candidates = aiExt.sap_doc_candidates;
-  }
-  return out;
 }
 
 export function updateProgressInReview(msg, isError = false) {
