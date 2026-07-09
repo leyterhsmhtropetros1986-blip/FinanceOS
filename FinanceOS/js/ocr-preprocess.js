@@ -157,6 +157,17 @@ export function estimateSkewAngle(source, maxDeg = 5) {
   return bestAngle;
 }
 
+/** Full preprocessing pipeline for OCR — run ONCE per page */
+export function preprocessOnce(source) {
+  const oriented = autoOrientCanvas(source);
+  const enhanced = enhanceCanvas(oriented);
+  const denoised = denoiseCanvas(enhanced);
+  const angle = estimateSkewAngle(denoised);
+  const deskewed = Math.abs(angle) > 0.25 ? rotateCanvas(denoised, -angle) : denoised;
+  const sharp = sharpenCanvas(deskewed);
+  return binarizeCanvas(sharp);
+}
+
 /** Full preprocessing pipeline for OCR */
 export function preprocessForOcr(source) {
   const enhanced = enhanceCanvas(source);

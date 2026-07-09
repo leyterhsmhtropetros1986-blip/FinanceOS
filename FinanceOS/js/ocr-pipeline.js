@@ -1,10 +1,22 @@
-/** Unified OCR pipeline — every stage wrapped in try/catch, never throws to caller */
-import { renderToCanvases, getWorker, extractAllFields } from './ocr.js';
-import { extractPdfText } from './pdf-text.js';
-import { getOcrPassVariants, autoOrientCanvas } from './ocr-preprocess.js';
-import { mergeExtractionResults, mergeOcrPages } from './field-extractors.js';
-import { refineExtraction, sanitizeAgainstOcrText } from './ocr-confidence.js';
+/**
+ * Single-pass OCR pipeline
+ * Render once → preprocess once → OCR once → extract from text → optional Claude if <65%
+ */
+import { renderDocumentOnce } from './ocr-render.js';
+import { preprocessOnce } from './ocr-preprocess.js';
+import { getWorker, extractAllFields } from './ocr.js';
+import { refineExtraction } from './ocr-confidence.js';
 import * as extractors from './ocr.js';
+import { matchSupplier } from './ocr.js';
+import { computeFileHash, getCachedOcr, setCachedOcr } from './ocr-cache.js';
+import {
+  startOcrJob, throwIfAborted, createTimings, yieldToMain, cleanupOcrMemory,
+} from './ocr-session.js';
+import { runClaudeVisionOCRDirect } from './ai.js';
+import { state } from './state.js';
+
+const CONF_AI_THRESHOLD = 65;
+const AI_TIMEOUT_MS = 60000;
 
 const STAGES = ['upload', 'render', 'preprocess', 'ocr', 'extract', 'match', 'validate', 'done'];
 
@@ -15,188 +27,299 @@ export function createProgressReporter(onProgress) {
     if (idx >= 0) stage = idx;
     onProgress?.(msg || name, stage / (STAGES.length - 1));
   };
-  const report = (msg, pct) => onProgress?.(msg, pct);
-  return { setStage, report };
+  return { setStage, report: (msg, pct) => onProgress?.(msg, pct) };
 }
 
-async function recognizePage(worker, canvas, label, params = {}) {
-  try {
-    if (params.whitelist) {
-      await worker.setParameters({ tessedit_char_whitelist: params.whitelist });
-    }
-    if (params.psm) {
-      await worker.setParameters({ tessedit_pageseg_mode: params.psm });
-    }
-    const { data } = await worker.recognize(canvas);
-    await worker.setParameters({ tessedit_char_whitelist: '', tessedit_pageseg_mode: '3' });
-    return {
-      text: data.text || '',
-      words: (data.words || []).map((w) => ({
-        text: w.text,
-        confidence: Math.round(w.confidence || 0),
-        x: w.bbox?.x0 || 0,
-        y: w.bbox?.y0 || 0,
-        w: w.bbox ? w.bbox.x1 - w.bbox.x0 : 0,
-        h: w.bbox ? w.bbox.y1 - w.bbox.y0 : 0,
-      })),
-      mean_confidence: Math.round(data.confidence || 0),
-      pass: label,
-    };
-  } catch (e) {
-    console.warn(`OCR pass ${label} failed:`, e);
-    return null;
-  }
+/** Cancel any in-flight OCR and start a fresh job */
+export function beginOcrExtraction() {
+  return startOcrJob();
 }
 
 /**
- * Production OCR pipeline — Tesseract multi-pass + PDF text layer.
- * Never throws; returns partial results on failure.
+ * Production single-pass pipeline.
+ * @param {File} file
+ * @param {{ onProgress?, signal?, renderBundle?, fileHash? }} opts
  */
-export async function runOcrPipeline(file, { onProgress, existingCanvases = null } = {}) {
-  const t0 = performance.now();
+export async function runOcrPipeline(file, {
+  onProgress,
+  signal: externalSignal,
+  renderBundle = null,
+  fileHash = null,
+} = {}) {
+  const timings = createTimings();
   const progress = createProgressReporter(onProgress);
-  const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-  let canvases = existingCanvases;
-  let pdfTextData = null;
-  let pages = [];
-  let fullText = '';
-  let errors = [];
+  const errors = [];
 
-  try {
-    progress.setStage('render', 'Rendering σελίδες…');
-    if (!canvases) {
-      canvases = await Promise.race([
-        renderToCanvases(file, (m) => progress.report(m)),
-        new Promise((_, rej) => setTimeout(() => rej(new Error('Render timeout (90s)')), 90000)),
-      ]);
-    }
-  } catch (e) {
-    errors.push(`render: ${e.message}`);
-    return emptyResult(file, errors, t0);
-  }
-
-  try {
-    progress.setStage('preprocess', 'Προεπεξεργασία εικόνας…');
-    canvases = canvases.map((c) => autoOrientCanvas(c));
-  } catch (e) {
-    console.warn('Preprocess failed:', e);
-  }
-
-  if (isPdf) {
+  let hash = fileHash;
+  if (!hash) {
     try {
-      progress.report('PDF text extraction…');
-      pdfTextData = await extractPdfText(file, progress.report);
+      hash = await computeFileHash(file);
     } catch (e) {
-      errors.push(`pdf-text: ${e.message}`);
+      console.warn('Hash failed:', e);
     }
   }
 
-  try {
-    progress.setStage('ocr', 'OCR (multi-pass)…');
-    const worker = await Promise.race([
-      getWorker(progress.report),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('Tesseract load timeout')), 120000)),
-    ]);
-
-    const allPageSets = [];
-    for (let i = 0; i < canvases.length; i++) {
-      progress.report(`OCR σελίδα ${i + 1}/${canvases.length}…`, i / canvases.length);
-      const passes = getOcrPassVariants(canvases[i]);
-      const passResults = [];
-      for (const pass of passes) {
-        const r = await recognizePage(worker, pass.canvas, pass.label, pass.params || {});
-        if (r) {
-          passResults.push({
-            page_number: i + 1,
-            text: r.text,
-            words: r.words,
-            width: pass.canvas.width,
-            height: pass.canvas.height,
-            mean_confidence: r.mean_confidence,
-            pass: r.pass,
-          });
-        }
-      }
-      if (passResults.length) {
-        allPageSets.push(mergeOcrPages([passResults]));
-      }
+  if (hash) {
+    const cached = getCachedOcr(hash);
+    if (cached) {
+      timings.mark('cache_hit');
+      timings.finish();
+      progress.setStage('done', 'Cache hit — skipped OCR');
+      return buildResult(file, cached, timings.marks, [], null);
     }
-    pages = mergeOcrPages(allPageSets);
-    fullText = [
-      pdfTextData?.fullText || '',
-      ...pages.map((p) => p.text),
-    ].filter(Boolean).join('\n');
+  }
+
+  throwIfAborted(externalSignal);
+
+  let bundle = renderBundle;
+  try {
+    progress.setStage('render', 'Rendering (once)…');
+    timings.mark('upload');
+    if (!bundle) {
+      bundle = await renderDocumentOnce(file, {
+        onProgress: (m) => progress.report(m),
+        signal: externalSignal,
+      });
+    }
+    timings.mark('render');
   } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    errors.push(`render: ${e.message}`);
+    timings.finish();
+    return emptyResult(file, errors, timings.marks);
+  }
+
+  throwIfAborted(externalSignal);
+
+  const processedCanvases = [];
+  try {
+    progress.setStage('preprocess', 'Preprocess (once per page)…');
+    for (let i = 0; i < bundle.originalCanvases.length; i++) {
+      throwIfAborted(externalSignal);
+      progress.report(`Preprocess σελ ${i + 1}/${bundle.originalCanvases.length}…`);
+      processedCanvases.push(preprocessOnce(bundle.originalCanvases[i]));
+      await yieldToMain();
+    }
+    timings.mark('preprocess');
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    console.warn('Preprocess failed, using originals:', e);
+    processedCanvases.push(...bundle.originalCanvases);
+    timings.mark('preprocess');
+  }
+
+  throwIfAborted(externalSignal);
+
+  let pages = [];
+  let ocrFullText = '';
+  try {
+    progress.setStage('ocr', 'OCR (single pass)…');
+    const worker = await getWorker((m) => progress.report(m));
+    for (let i = 0; i < processedCanvases.length; i++) {
+      throwIfAborted(externalSignal);
+      progress.report(`OCR σελ ${i + 1}/${processedCanvases.length}…`, i / processedCanvases.length);
+      const { data } = await worker.recognize(processedCanvases[i]);
+      pages.push({
+        page_number: i + 1,
+        text: data.text || '',
+        words: (data.words || []).map((w) => ({
+          text: w.text,
+          confidence: Math.round(w.confidence || 0),
+          x: w.bbox?.x0 || 0,
+          y: w.bbox?.y0 || 0,
+          w: w.bbox ? w.bbox.x1 - w.bbox.x0 : 0,
+          h: w.bbox ? w.bbox.y1 - w.bbox.y0 : 0,
+        })),
+        width: processedCanvases[i].width,
+        height: processedCanvases[i].height,
+        mean_confidence: Math.round(data.confidence || 0),
+      });
+      await yieldToMain();
+    }
+    ocrFullText = pages.map((p) => p.text).join('\n');
+    timings.mark('ocr');
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
     errors.push(`ocr: ${e.message}`);
-    fullText = pdfTextData?.fullText || '';
-    pages = pdfTextData?.pages || [];
+    pages = bundle.embeddedPages || [];
+    ocrFullText = '';
+    timings.mark('ocr');
   }
 
-  try {
-    progress.setStage('extract', 'Εξαγωγή πεδίων…');
-    let ocrExtracted = extractAllFields(pages, fullText);
-    ocrExtracted._meanOcrConfidence = pages.length
-      ? Math.round(pages.reduce((s, p) => s + (p.mean_confidence || 0), 0) / pages.length)
-      : 0;
+  const fullText = [bundle.embeddedFullText, ocrFullText].filter(Boolean).join('\n');
+  const allPages = mergePageText(bundle.embeddedPages, pages);
 
-    let pdfExtracted = null;
-    if (pdfTextData?.fullText) {
-      pdfExtracted = extractAllFields(pdfTextData.pages, pdfTextData.fullText);
-      pdfExtracted._meanOcrConfidence = 95;
+  throwIfAborted(externalSignal);
+
+  progress.setStage('extract', 'Εξαγωγή πεδίων…');
+  timings.mark('regex_start');
+
+  let extracted = extractAllFields(allPages, fullText);
+  extracted = refineExtraction(extracted, fullText, allPages, {
+    extractAfm: extractors.extractAfm,
+    extractInvoiceNumber: extractors.extractInvoiceNumber,
+    extractDate: extractors.extractDate,
+    extractSapDocCandidates: extractors.extractSapDocCandidates,
+    extractSupplierNameHint: extractors.extractSupplierNameHint,
+  });
+
+  const ocrConfidence = computeMeanConfidence(allPages, bundle.embeddedPages);
+  extracted._meanOcrConfidence = ocrConfidence;
+  timings.mark('regex');
+
+  const useAI = state.settings.provider === 'anthropic' && state.settings.apiKey;
+  let engine = bundle.embeddedFullText ? 'single-pass OCR + PDF text' : 'single-pass OCR';
+  let aiUsed = false;
+
+  if (useAI && ocrConfidence < CONF_AI_THRESHOLD) {
+    try {
+      progress.report(`Claude Vision (confidence ${ocrConfidence}% < ${CONF_AI_THRESHOLD}%)…`);
+      throwIfAborted(externalSignal);
+      const aiResult = await Promise.race([
+        runClaudeVisionOCRDirect(file, (m) => progress.report(`AI: ${m}`)),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('AI timeout (60s)')), AI_TIMEOUT_MS)),
+      ]);
+      extracted = mergeLowConfidenceWithAi(extracted, aiResult.extracted, fullText);
+      engine = `${engine} + Claude (low confidence)`;
+      aiUsed = true;
+      timings.mark('claude');
+    } catch (e) {
+      if (e.name === 'AbortError') throw e;
+      console.warn('Claude skipped (non-fatal):', e);
+      errors.push(`claude: ${e.message}`);
     }
-
-    const meanOcr = ocrExtracted._meanOcrConfidence || 0;
-    let extracted = pdfExtracted && meanOcr < 65
-      ? mergeExtractionResults(pdfExtracted, ocrExtracted)
-      : mergeExtractionResults(ocrExtracted, pdfExtracted);
-
-    extracted = refineExtraction(extracted, fullText, pages, {
-      extractAfm: extractors.extractAfm,
-      extractInvoiceNumber: extractors.extractInvoiceNumber,
-      extractDate: extractors.extractDate,
-      extractSapDocCandidates: extractors.extractSapDocCandidates,
-      extractSupplierNameHint: extractors.extractSupplierNameHint,
-    });
-
-    progress.setStage('validate', 'Έλεγχος αποτελεσμάτων…');
-    extracted = sanitizeAgainstOcrText(extracted, fullText);
-
-    const processingMs = Math.round(performance.now() - t0);
-    progress.setStage('done', 'Ολοκληρώθηκε');
-
-    return {
-      filename: file.name,
-      fileSize: file.size,
-      pageCount: canvases.length,
-      processingMs,
-      engine: pdfTextData ? 'multi-pass OCR + PDF text' : 'multi-pass OCR',
-      fullText,
-      pdfText: pdfTextData?.fullText || null,
-      extracted,
-      extractedList: [extracted],
-      canvases,
-      supplierHint: extracted.supplier_name_hint,
-      ocrConfidence: meanOcr,
-      errors,
-      success: true,
-    };
-  } catch (e) {
-    errors.push(`extract: ${e.message}`);
-    return {
-      ...emptyResult(file, errors, t0),
-      canvases,
-      fullText,
-      pages,
-    };
+  } else if (useAI) {
+    timings.mark('claude_skipped');
   }
+
+  progress.setStage('match', 'Supplier matching…');
+  const [{ best, all: supplierCandidates }] = await Promise.all([
+    Promise.resolve().then(() => {
+      const m = matchSupplier(extracted.afm, extracted.supplier_name_hint, fullText);
+      extracted.confidence_supplier = m.best
+        ? m.best.confidence
+        : (m.all[0]?.confidence || 0);
+      return m;
+    }),
+  ]);
+  timings.mark('supplier');
+
+  progress.setStage('validate', 'Έλεγχος…');
+  timings.mark('validate');
+
+  const previewDataUrls = bundle.previewCanvases.map((c) => c.toDataURL('image/jpeg', 0.85));
+
+  const payload = {
+    fullText,
+    pages: allPages,
+    extracted,
+    extractedList: [extracted],
+    ocrConfidence,
+    engine,
+    pageCount: bundle.pageCount,
+    previewCanvases: bundle.previewCanvases,
+    previewDataUrls,
+    supplierMatch: { best, all: supplierCandidates },
+    aiUsed,
+  };
+
+  if (hash) setCachedOcr(hash, payload);
+
+  timings.finish();
+  progress.setStage('done', 'Ολοκληρώθηκε');
+
+  return buildResult(file, payload, timings.marks, errors, bundle.previewCanvases);
 }
 
-function emptyResult(file, errors, t0) {
+/** @deprecated use runOcrPipeline — kept for imports */
+export async function runSinglePassOcr(file, opts) {
+  return runOcrPipeline(file, opts);
+}
+
+function mergePageText(embedded, ocrPages) {
+  if (!embedded?.length) return ocrPages;
+  if (!ocrPages.length) return embedded;
+  return ocrPages.map((p, i) => {
+    const emb = embedded[i];
+    if (!emb?.text?.trim()) return p;
+    const combined = `${emb.text}\n${p.text}`.trim();
+    return {
+      ...p,
+      text: combined,
+      words: [...(emb.words || []), ...(p.words || [])],
+      mean_confidence: Math.max(p.mean_confidence || 0, emb.mean_confidence || 0),
+    };
+  });
+}
+
+function computeMeanConfidence(ocrPages, embeddedPages) {
+  const scores = [];
+  for (const p of ocrPages || []) scores.push(p.mean_confidence || 0);
+  for (const p of embeddedPages || []) {
+    if (p.text?.trim().length > 40) scores.push(95);
+  }
+  return scores.length
+    ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)
+    : 0;
+}
+
+function mergeLowConfidenceWithAi(ocrExt, aiExt, fullText) {
+  const out = { ...ocrExt };
+  const fill = (field, confField, minAi = 60) => {
+    if ((out[confField] || 0) >= CONF_AI_THRESHOLD && out[field]) return;
+    if (aiExt[field] && (aiExt[confField] || 0) >= minAi) {
+      out[field] = aiExt[field];
+      out[confField] = aiExt[confField];
+    }
+  };
+  fill('afm', 'confidence_afm');
+  fill('invoice_number', 'confidence_invoice_no');
+  fill('invoice_date', 'confidence_date');
+  fill('sap_doc_number', 'confidence_sap_doc');
+  if (!out.supplier_name_hint && aiExt.supplier_name_hint) {
+    out.supplier_name_hint = aiExt.supplier_name_hint;
+    out.confidence_supplier = aiExt.confidence_supplier || 70;
+  }
+  if (aiExt.sap_doc_candidates?.length) {
+    const map = new Map((out.sap_doc_candidates || []).map((c) => [c.value, c]));
+    for (const c of aiExt.sap_doc_candidates) {
+      const prev = map.get(c.value);
+      if (!prev || c.confidence > prev.confidence) map.set(c.value, c);
+    }
+    out.sap_doc_candidates = [...map.values()].sort((a, b) => b.confidence - a.confidence).slice(0, 15);
+  }
+  return out;
+}
+
+function buildResult(file, payload, timings, errors, previewCanvases) {
+  return {
+    filename: file.name,
+    fileSize: file.size,
+    pageCount: payload.pageCount || 0,
+    processingMs: timings?.total || 0,
+    timings,
+    engine: payload.engine || 'single-pass OCR',
+    fullText: payload.fullText || '',
+    extracted: payload.extracted,
+    extractedList: payload.extractedList || [payload.extracted],
+    canvases: previewCanvases || payload.previewCanvases || [],
+    previewDataUrls: payload.previewDataUrls,
+    supplierHint: payload.extracted?.supplier_name_hint,
+    supplierMatch: payload.supplierMatch,
+    ocrConfidence: payload.ocrConfidence || 0,
+    errors: errors || [],
+    success: true,
+    cached: !!timings?.cache_hit,
+  };
+}
+
+function emptyResult(file, errors, timings) {
   return {
     filename: file.name,
     fileSize: file.size,
     pageCount: 0,
-    processingMs: Math.round(performance.now() - t0),
+    processingMs: timings?.total || 0,
+    timings,
     engine: 'failed',
     fullText: '',
     extracted: blankExtraction(),
@@ -215,3 +338,5 @@ function blankExtraction() {
     sap_doc_candidates: [],
   };
 }
+
+export { cleanupOcrMemory, cancelOcrJob } from './ocr-session.js';
