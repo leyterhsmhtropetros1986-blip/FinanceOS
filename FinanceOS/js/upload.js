@@ -697,8 +697,8 @@ export async function handleFile(originalFile) {
     const timingMsg = result.timings ? ` (${Object.entries(result.timings).map(([k, v]) => `${k}:${v}ms`).join(' ')})` : '';
     if (result.cached) {
       toast(`✓ Cache hit — instant extraction${timingMsg}`, 'ok');
-    } else if (result.engine?.includes('Claude')) {
-      toast(`✓ Claude βοήθησε (χαμηλό OCR confidence) · ${result.processingMs}ms`, 'ok');
+    } else if (result.engine?.includes('PDF text')) {
+      toast(`✓ PDF text extraction · ${result.processingMs}ms`, 'ok');
     } else if (result.extracted?.afm || result.extracted?.sap_doc_number) {
       toast(`✓ OCR ολοκληρώθηκε σε ${result.processingMs}ms`, 'ok');
     } else {

@@ -12,6 +12,7 @@ import { loadArchiveBrowser, initArchiveView } from './archive.js';
 import { updateReviewBadge } from './badges.js';
 import { state } from './state.js';
 import { $, toast } from './utils.js';
+import { warmupOcrWorker } from './ocr.js';
 
 export function initNavigation() {
   // NAVIGATION
@@ -121,6 +122,7 @@ async function boot() {
   renderDashboard();
   updateReviewBadge();
   updateEngineStatus();
+  warmupOcrWorker();
 
   const isSandboxed = checkEnvironment();
   checkLibraries();

@@ -1,5 +1,17 @@
 /** Single-pass document render — one PDF open, text layer + canvas per page */
-import { throwIfAborted, trackCanvas, yieldToMain } from './ocr-session.js';
+import { throwIfAborted, trackCanvas } from './ocr-session.js';
+
+export const OCR_MAX_WIDTH = 1400;
+export const PREVIEW_SCALE = 1.0;
+export const MAX_OCR_PAGES = 1;
+
+/** Enough embedded PDF text → skip Tesseract entirely */
+export function embeddedTextIsSufficient(pages) {
+  const full = (pages || []).map((p) => p.text || '').join('\n').trim();
+  if (full.length < 80) return false;
+  const digits = (full.match(/\d/g) || []).length;
+  return digits >= 6;
+}
 
 export async function renderDocumentOnce(file, { onProgress, signal } = {}) {
   const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
@@ -20,22 +32,6 @@ export async function renderDocumentOnce(file, { onProgress, signal } = {}) {
     throwIfAborted(signal);
     onProgress?.(`Render σελ ${p}/${maxPages}…`, p / maxPages);
     const page = await pdf.getPage(p);
-
-    const viewportOcr = page.getViewport({ scale: 3.0 });
-    const ocrCanvas = document.createElement('canvas');
-    ocrCanvas.width = viewportOcr.width;
-    ocrCanvas.height = viewportOcr.height;
-    await page.render({ canvasContext: ocrCanvas.getContext('2d'), viewport: viewportOcr }).promise;
-    trackCanvas(ocrCanvas);
-    originalCanvases.push(ocrCanvas);
-
-    const viewportPrev = page.getViewport({ scale: 1.2 });
-    const prevCanvas = document.createElement('canvas');
-    prevCanvas.width = viewportPrev.width;
-    prevCanvas.height = viewportPrev.height;
-    prevCanvas.getContext('2d').drawImage(ocrCanvas, 0, 0, prevCanvas.width, prevCanvas.height);
-    trackCanvas(prevCanvas);
-    previewCanvases.push(prevCanvas);
 
     const viewportText = page.getViewport({ scale: 1 });
     const content = await page.getTextContent();
@@ -63,7 +59,32 @@ export async function renderDocumentOnce(file, { onProgress, signal } = {}) {
       source: 'pdf_embedded',
     });
 
-    await yieldToMain();
+    const viewportPrev = page.getViewport({ scale: PREVIEW_SCALE });
+    const prevCanvas = document.createElement('canvas');
+    prevCanvas.width = viewportPrev.width;
+    prevCanvas.height = viewportPrev.height;
+    await page.render({ canvasContext: prevCanvas.getContext('2d'), viewport: viewportPrev }).promise;
+    trackCanvas(prevCanvas);
+    previewCanvases.push(prevCanvas);
+  }
+
+  const skipOcr = embeddedTextIsSufficient(embeddedPages);
+  const ocrPageLimit = skipOcr ? 0 : Math.min(maxPages, MAX_OCR_PAGES);
+
+  if (!skipOcr) {
+    for (let p = 1; p <= ocrPageLimit; p++) {
+      throwIfAborted(signal);
+      const page = await pdf.getPage(p);
+      const baseVp = page.getViewport({ scale: 1 });
+      const ocrScale = Math.min(2.0, OCR_MAX_WIDTH / baseVp.width);
+      const viewportOcr = page.getViewport({ scale: ocrScale });
+      const ocrCanvas = document.createElement('canvas');
+      ocrCanvas.width = viewportOcr.width;
+      ocrCanvas.height = viewportOcr.height;
+      await page.render({ canvasContext: ocrCanvas.getContext('2d'), viewport: viewportOcr }).promise;
+      trackCanvas(ocrCanvas);
+      originalCanvases.push(ocrCanvas);
+    }
   }
 
   const embeddedFullText = embeddedPages.map((pg) => pg.text).join('\n');
@@ -74,6 +95,7 @@ export async function renderDocumentOnce(file, { onProgress, signal } = {}) {
     embeddedPages,
     embeddedFullText,
     pageCount: maxPages,
+    skipOcr,
     buffer,
   };
 }
@@ -89,13 +111,21 @@ async function renderImageOnce(file, { signal }) {
       el.src = url;
     });
     throwIfAborted(signal);
+    let w = img.naturalWidth;
+    let h = img.naturalHeight;
+    const maxDim = OCR_MAX_WIDTH;
+    if (Math.max(w, h) > maxDim) {
+      const r = maxDim / Math.max(w, h);
+      w = Math.round(w * r);
+      h = Math.round(h * r);
+    }
     const canvas = document.createElement('canvas');
-    canvas.width = img.naturalWidth;
-    canvas.height = img.naturalHeight;
-    canvas.getContext('2d').drawImage(img, 0, 0);
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext('2d').drawImage(img, 0, 0, w, h);
     trackCanvas(canvas);
     const prev = document.createElement('canvas');
-    const scale = Math.min(1, 1200 / canvas.width);
+    const scale = Math.min(1, 900 / canvas.width);
     prev.width = Math.round(canvas.width * scale);
     prev.height = Math.round(canvas.height * scale);
     prev.getContext('2d').drawImage(canvas, 0, 0, prev.width, prev.height);
@@ -106,6 +136,7 @@ async function renderImageOnce(file, { signal }) {
       embeddedPages: [],
       embeddedFullText: '',
       pageCount: 1,
+      skipOcr: false,
       buffer: null,
     };
   } finally {

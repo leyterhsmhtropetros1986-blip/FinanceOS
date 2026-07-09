@@ -157,6 +157,23 @@ export function estimateSkewAngle(source, maxDeg = 5) {
   return bestAngle;
 }
 
+/** Downscale canvas so longest side ≤ maxDim (keeps OCR fast) */
+export function downscaleForOcr(source, maxDim = 1400) {
+  const longest = Math.max(source.width, source.height);
+  if (longest <= maxDim) return source;
+  const ratio = maxDim / longest;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(source.width * ratio);
+  canvas.height = Math.round(source.height * ratio);
+  canvas.getContext('2d').drawImage(source, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
+/** Fast preprocess — grayscale + contrast only (~50ms vs ~3s for full pipeline) */
+export function preprocessFast(source) {
+  return enhanceCanvas(downscaleForOcr(source));
+}
+
 /** Full preprocessing pipeline for OCR — run ONCE per page */
 export function preprocessOnce(source) {
   const oriented = autoOrientCanvas(source);

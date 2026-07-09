@@ -5,15 +5,27 @@ import { extractExtendedFields } from './field-extractors.js';
 import { fuzzyFindSupplierInText } from './ocr-confidence.js';
 
 let _tesseractWorker = null;
+let _workerReady = null;
 
 // REAL OCR — Tesseract.js (ell+eng) + PDF.js
 // ═══════════════════════════════════════════════════════════
 
+async function configureWorkerForSpeed(worker) {
+  try {
+    await worker.setParameters({
+      tessedit_pageseg_mode: '6',
+      preserve_interword_spaces: '1',
+    });
+  } catch (e) {
+    console.warn('Tesseract params:', e);
+  }
+}
 
 export async function getWorker(onProgress) {
   if (_tesseractWorker) return _tesseractWorker;
+  if (_workerReady) return _workerReady;
   onProgress && onProgress('Φόρτωση Tesseract (ell+eng)…', 0);
-  _tesseractWorker = await Tesseract.createWorker(['ell', 'eng'], 1, {
+  _workerReady = Tesseract.createWorker(['ell', 'eng'], 1, {
     logger: (m) => {
       if (m.status === 'recognizing text' && onProgress) {
         onProgress(`OCR σελίδας: ${Math.round(m.progress * 100)}%`, m.progress);
@@ -21,8 +33,23 @@ export async function getWorker(onProgress) {
         onProgress(m.status, m.progress || 0);
       }
     },
+  }).then(async (worker) => {
+    await configureWorkerForSpeed(worker);
+    _tesseractWorker = worker;
+    return worker;
   });
-  return _tesseractWorker;
+  return _workerReady;
+}
+
+/** Preload Tesseract during idle time so first invoice is fast */
+export function warmupOcrWorker() {
+  if (_tesseractWorker || _workerReady) return;
+  const run = () => getWorker().catch(() => {});
+  if (typeof requestIdleCallback === 'function') {
+    requestIdleCallback(run, { timeout: 4000 });
+  } else {
+    setTimeout(run, 500);
+  }
 }
 
 export async function renderPdfToCanvases(file, onProgress) {
