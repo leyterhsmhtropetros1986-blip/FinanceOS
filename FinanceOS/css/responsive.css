@@ -9,4 +9,8 @@
   .preview-panel { border-right: none; border-bottom: 1px solid var(--border); max-height: 400px; }
   .main { padding: 16px; }
   .audit-item { grid-template-columns: 1fr; gap: 4px; }
+  .kpi-row-primary { grid-template-columns: repeat(2, 1fr); }
+  .invoices-toolbar { flex-direction: column; align-items: stretch; }
+  .search-box { max-width: none; }
+  .bulk-bar { flex-direction: column; align-items: flex-start; }
 }

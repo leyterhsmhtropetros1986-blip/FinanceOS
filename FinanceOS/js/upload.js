@@ -42,6 +42,22 @@ let fileInputEl;
 let _ocrJobSignal = null;
 let _virtualPreviewCtrl = null;
 
+/** Αποθήκευση οικονομικών & confidence πεδίων στο invoice record */
+function assignFinancialFields(invoice, extracted, result) {
+  if (!invoice || !extracted) return;
+  Object.assign(invoice, {
+    net_amount: extracted.net_amount,
+    vat_amount: extracted.vat_amount,
+    total_amount: extracted.total_amount,
+    currency: extracted.currency || 'EUR',
+    vat_rate: extracted.vat_rate,
+    confidence_total: extracted.confidence_total,
+    confidence_net: extracted.confidence_net,
+    confidence_vat: extracted.confidence_vat,
+    ocr_processing_ms: result?.processingMs || invoice.ocr_processing_ms || null,
+  });
+}
+
 // BATCH PROCESSING — bulk upload πολλών τιμολογίων
 // ═══════════════════════════════════════════════════════════
 
@@ -275,7 +291,9 @@ export async function processBatchItem(item, useAI) {
       confidence_invoice_no: extracted.confidence_invoice_no,
       confidence_sap_doc: extracted.confidence_sap_doc,
       confidence_date: extracted.confidence_date,
+      confidence_supplier: best ? best.confidence : extracted.confidence_supplier,
     });
+    assignFinancialFields(invoice, extracted, result);
 
     // Απόφαση
     const canAutoArchive =
@@ -1113,6 +1131,12 @@ export function populateReviewFromOCR(result, file, invoice) {
   invoice.supplier_id = best ? best.supplier_id : null;
   invoice.status = 'needs_review';
   invoice.page_count = result?.pageCount || 0;
+  invoice.confidence_afm = ext.confidence_afm;
+  invoice.confidence_invoice_no = ext.confidence_invoice_no;
+  invoice.confidence_date = ext.confidence_date;
+  invoice.confidence_sap_doc = ext.confidence_sap_doc;
+  invoice.confidence_supplier = ext.confidence_supplier;
+  assignFinancialFields(invoice, ext, result);
 
   populateSupplierDropdown(best, all);
   populateSAPDropdown(ext.sap_doc_candidates, ext.sap_doc_number);
@@ -1557,6 +1581,8 @@ async function onArchiveClick() {
       toast(`Δεν γράφτηκε στον δίσκο: ${e.message}`, 'err');
     }
   }
+  const ext = state.currentUpload?.result?.extracted;
+  if (ext) assignFinancialFields(invoice, normalizeExtraction(ext), state.currentUpload?.result);
   Object.assign(invoice, {
     supplier_id: payload.supplier_id, afm: payload.afm,
     invoice_number: payload.invoice_number, invoice_date: payload.invoice_date,

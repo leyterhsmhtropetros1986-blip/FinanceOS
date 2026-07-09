@@ -128,7 +128,9 @@
       </header>
 
       <!-- KPI cards -->
-      <div id="dash-kpis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-bottom:24px;"></div>
+      <div id="dash-kpis" class="kpi-row-primary"></div>
+      <div id="dash-kpis-ext" class="kpi-row-ext"></div>
+      <p id="dash-kpi-hint" class="kpi-hint" hidden></p>
 
       <!-- Charts row -->
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;">
@@ -371,25 +373,48 @@
     <section class="view" id="view-invoices">
       <header class="view-head">
         <div><h1>Τιμολόγια</h1></div>
-        <div class="view-actions">
+        <div class="view-actions invoices-toolbar">
+          <div class="search-box">
+            <span class="search-icon" aria-hidden="true">🔍</span>
+            <input type="search" id="invoice-search" placeholder="Αναζήτηση — αρχείο, SAP, ΑΦΜ, τιμολόγιο, προμηθευτής" autocomplete="off" />
+          </div>
           <select id="invoice-filter">
             <option value="">Όλα</option>
             <option value="needs_review">Χρειάζεται έλεγχο</option>
             <option value="archived">Αρχειοθετημένα</option>
-            <option value="duplicate">Duplicates</option>
-            <option value="error">Σφάλμα</option>
+            <option value="duplicate">Αντίγραφα</option>
+            <option value="error">Σφάλμα OCR</option>
+            <option value="processing">Σε επεξεργασία</option>
           </select>
           <button class="btn btn-secondary" id="btn-export-excel" title="Εξαγωγή όλων των αρχειοθετημένων σε Excel">
             📊 Excel
           </button>
         </div>
       </header>
+      <div id="invoice-bulk-bar" class="bulk-bar" hidden>
+        <span id="invoice-bulk-count">0 επιλεγμένα</span>
+        <div class="bulk-actions">
+          <button class="btn btn-secondary btn-sm" id="btn-bulk-excel">Export Excel</button>
+          <button class="btn btn-secondary btn-sm" id="btn-bulk-pdf">Export PDF</button>
+          <button class="btn btn-ghost btn-sm" id="btn-bulk-delete">Delete</button>
+          <button class="btn btn-ghost btn-sm" id="btn-bulk-merge">Merge</button>
+          <button class="btn btn-ghost btn-sm" id="btn-bulk-archive">Archive</button>
+          <button class="btn btn-ghost btn-sm" id="btn-bulk-move">Move</button>
+        </div>
+      </div>
       <div class="table-wrap">
-        <table class="data-table" id="invoices-table">
+        <table class="data-table invoices-table" id="invoices-table">
           <thead>
             <tr>
-              <th>#</th><th>Αρχείο</th><th>Προμηθευτής</th><th>ΑΦΜ</th>
-              <th>Τιμολόγιο</th><th>Ημερ.</th><th>SAP Doc</th><th>Status</th><th>Από</th><th></th>
+              <th class="col-check"><input type="checkbox" id="invoice-select-all" title="Επιλογή όλων" /></th>
+              <th class="col-file">Αρχείο</th>
+              <th class="col-supplier">Προμηθευτής</th>
+              <th class="col-afm">ΑΦΜ</th>
+              <th class="col-invno">Τιμολόγιο</th>
+              <th class="col-date">Ημερομηνία</th>
+              <th class="col-sap">SAP Doc</th>
+              <th class="col-status">Status</th>
+              <th class="col-actions">Ενέργειες</th>
             </tr>
           </thead>
           <tbody></tbody>

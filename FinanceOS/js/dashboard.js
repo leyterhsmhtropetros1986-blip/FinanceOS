@@ -1,46 +1,80 @@
-/** Dashboard view */
+/** Dashboard view — KPI από αποθηκευμένα δεδομένα παραστατικών */
 import { state } from './state.js';
 import { $, escapeHtml } from './utils.js';
-import { fmtEUR, getArchivedForPeriod } from './analytics.js';
+import {
+  fmtEUR, fmtPct, fmtMs, getArchivedForPeriod, getInvoiceTotal,
+  computeFinancialKpis, computeOperationalKpis,
+} from './analytics.js';
 import { renderMonthlyChart, renderStatusChart, renderSuppliersChart } from './charts.js';
 
 export function renderDashboard() {
-  const periodDays = parseInt($('#dash-period')?.value || '365');
+  const periodDays = parseInt($('#dash-period')?.value || '365', 10);
   const archived = getArchivedForPeriod(periodDays);
   const needsReview = state.invoices.filter(i => i.status === 'needs_review').length;
-  const duplicates = state.invoices.filter(i => i.status === 'duplicate').length;
-  const totalValue = archived.reduce((sum, i) => sum + (Number(i.total_amount) || 0), 0);
-  const totalVat = archived.reduce((sum, i) => sum + (Number(i.vat_amount) || 0), 0);
-  const uniqueSuppliers = new Set(archived.map(i => i.supplier_id).filter(Boolean)).size;
-  const avgValue = archived.length > 0 ? totalValue / archived.length : 0;
+  const fin = computeFinancialKpis(archived);
+  const ops = computeOperationalKpis(state.invoices);
+
+  const totalValueDisplay = fin.hasAnyAmount ? fmtEUR(fin.totalValue) : fmtEUR(null, { missing: true });
+  const avgValueDisplay = fin.hasAnyAmount ? fmtEUR(fin.avgValue) : fmtEUR(null, { missing: true });
+  const vatDisplay = fin.hasAnyAmount ? fmtEUR(fin.totalVat) : fmtEUR(null, { missing: true });
 
   $('#dash-kpis').innerHTML = `
     <div class="kpi-card ok">
-      <div class="kpi-label">Αρχειοθετημένα</div>
-      <div class="kpi-value">${archived.length}<span class="kpi-unit">τιμολόγια</span></div>
-      <div class="kpi-delta">${periodDays > 0 ? `τελευταίες ${periodDays} μέρες` : 'όλα'}</div>
+      <div class="kpi-label">Παραστατικά</div>
+      <div class="kpi-value">${archived.length}</div>
     </div>
     <div class="kpi-card">
       <div class="kpi-label">Συνολική Αξία</div>
-      <div class="kpi-value mono">${fmtEUR(totalValue)}</div>
-      <div class="kpi-delta">ΦΠΑ: ${fmtEUR(totalVat)}</div>
+      <div class="kpi-value mono ${fin.hasAnyAmount ? '' : 'kpi-missing'}">${totalValueDisplay}</div>
     </div>
     <div class="kpi-card">
-      <div class="kpi-label">Μέσο Ποσό</div>
-      <div class="kpi-value mono">${fmtEUR(avgValue)}</div>
-      <div class="kpi-delta">${uniqueSuppliers} προμηθευτές</div>
+      <div class="kpi-label">Μέση Αξία</div>
+      <div class="kpi-value mono ${fin.hasAnyAmount ? '' : 'kpi-missing'}">${avgValueDisplay}</div>
     </div>
     <div class="kpi-card ${needsReview > 0 ? 'warn' : ''}">
       <div class="kpi-label">Εκκρεμότητες</div>
-      <div class="kpi-value">${needsReview}<span class="kpi-unit">έλεγχος</span></div>
-      <div class="kpi-delta">${duplicates} duplicates</div>
-    </div>
-    <div class="kpi-card">
-      <div class="kpi-label">Χρήστες</div>
-      <div class="kpi-value">${new Set(archived.map(i => i.archived_by).filter(Boolean)).size || 1}</div>
-      <div class="kpi-delta">${state.currentUser ? `συνδεδεμένος: ${state.currentUser}` : 'χωρίς όνομα χρήστη'}</div>
+      <div class="kpi-value">${needsReview}</div>
     </div>
   `;
+
+  $('#dash-kpis-ext').innerHTML = `
+    <div class="kpi-card kpi-card-sm">
+      <div class="kpi-label">Σύνολο ΦΠΑ</div>
+      <div class="kpi-value mono kpi-value-sm ${fin.hasAnyAmount ? '' : 'kpi-missing'}">${vatDisplay}</div>
+    </div>
+    <div class="kpi-card kpi-card-sm">
+      <div class="kpi-label">Μέσος χρόνος OCR</div>
+      <div class="kpi-value mono kpi-value-sm">${fmtMs(ops.avgOcrMs)}</div>
+    </div>
+    <div class="kpi-card kpi-card-sm">
+      <div class="kpi-label">Επιτυχία OCR</div>
+      <div class="kpi-value mono kpi-value-sm">${fmtPct(ops.ocrSuccessRate)}</div>
+    </div>
+    <div class="kpi-card kpi-card-sm">
+      <div class="kpi-label">OCR Confidence</div>
+      <div class="kpi-value mono kpi-value-sm">${fmtPct(ops.avgConfidence)}</div>
+    </div>
+    <div class="kpi-card kpi-card-sm">
+      <div class="kpi-label">Χειροκίνητες διορθώσεις</div>
+      <div class="kpi-value mono kpi-value-sm">${ops.manualCorrections}</div>
+    </div>
+    <div class="kpi-card kpi-card-sm">
+      <div class="kpi-label">Duplicates</div>
+      <div class="kpi-value mono kpi-value-sm">${ops.duplicates}</div>
+    </div>
+    <div class="kpi-card kpi-card-sm">
+      <div class="kpi-label">Αυτόματη αναγν. προμηθευτή</div>
+      <div class="kpi-value mono kpi-value-sm">${fmtPct(ops.autoSupplierRate)}</div>
+    </div>
+  `;
+
+  if (fin.missingAmountCount > 0 && archived.length > 0) {
+    $('#dash-kpi-hint').hidden = false;
+    $('#dash-kpi-hint').textContent =
+      `${fin.missingAmountCount} από ${archived.length} αρχειοθετημένα δεν έχουν εξαγόμενο ποσό — εμφανίζονται ως «${escapeHtml('Δεν έχει εξαχθεί')}».`;
+  } else if ($('#dash-kpi-hint')) {
+    $('#dash-kpi-hint').hidden = true;
+  }
 
   renderMonthlyChart(archived, periodDays);
   renderStatusChart();
@@ -68,13 +102,14 @@ export function renderRecentActivity() {
     if (diffMs < 3600000) ago = fmt.format(-Math.round(diffMs / 60000), 'minute');
     else if (diffMs < 86400000) ago = fmt.format(-Math.round(diffMs / 3600000), 'hour');
     else ago = fmt.format(-Math.round(diffMs / 86400000), 'day');
+    const amount = getInvoiceTotal(inv);
     return `
       <div class="recent-item">
         <div class="recent-dot ${inv.status}"></div>
         <div class="recent-content">
           <div class="recent-title">${escapeHtml(supplier?.name || inv.original_filename || '—')}</div>
           <div class="recent-meta">
-            ${inv.total_amount ? `€${Number(inv.total_amount).toFixed(2)} · ` : ''}
+            ${amount != null ? `€${amount.toFixed(2)} · ` : ''}
             ${escapeHtml(inv.invoice_number || '—')} · ${ago}
             ${inv.archived_by ? ' · ' + escapeHtml(inv.archived_by) : ''}
           </div>
@@ -83,4 +118,3 @@ export function renderRecentActivity() {
     `;
   }).join('');
 }
-// ═══════════════════════════════════════════════════════════
