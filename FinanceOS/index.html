@@ -269,9 +269,13 @@
             <!-- OCR Confidence Panel (spec §8) -->
             <div class="confidence-panel">
               <div class="confidence-panel-head">
-                <span>OCR Results</span>
-                <span id="ocr-status" style="font-size:11px;color:var(--text-muted);text-transform:none;letter-spacing:normal;font-weight:normal;">—</span>
-                <span id="mean-confidence"></span>
+                <span>Αναγνώριση</span>
+                <span id="upload-status-badge" class="upload-status-badge">—</span>
+              </div>
+              <div id="pipeline-progress" class="pipeline-progress"></div>
+              <div class="confidence-subhead">
+                <span id="ocr-status" class="upload-status-inline" hidden>—</span>
+                <span id="mean-confidence">—</span>
               </div>
               <div class="confidence-row"><span>ΑΦΜ</span><span class="conf-bar-wrap"><span class="conf-bar" id="conf-afm"></span></span><span class="conf-pct" id="conf-afm-pct">—</span></div>
               <div class="confidence-row"><span>Invoice No</span><span class="conf-bar-wrap"><span class="conf-bar" id="conf-invno"></span></span><span class="conf-pct" id="conf-invno-pct">—</span></div>
@@ -349,6 +353,8 @@
             </details>
 
             <div class="review-actions">
+              <button class="btn btn-secondary" id="btn-retry-ocr" type="button">Επανάληψη OCR</button>
+              <button class="btn btn-secondary" id="btn-retry-ai" type="button">Επανάληψη AI</button>
               <button class="btn btn-secondary" id="btn-cancel">Ακύρωση</button>
               <button class="btn btn-primary" id="btn-archive">Αρχειοθέτηση (Ctrl+S)</button>
             </div>

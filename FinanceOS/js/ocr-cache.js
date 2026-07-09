@@ -1,4 +1,5 @@
 /** In-memory OCR result cache keyed by file hash */
+import { normalizeExtraction } from './extraction-schema.js';
 
 const _cache = new Map();
 const MAX_ENTRIES = 24;
@@ -27,12 +28,13 @@ export async function getCachedOcr(hash) {
   const entry = _cache.get(hash);
   if (entry) {
     entry.lastAccess = Date.now();
-    return entry.payload;
+    return normalizeCachedPayload(entry.payload);
   }
   const idb = await getIdbCache(hash);
   if (idb) {
-    _cache.set(hash, { payload: idb, lastAccess: Date.now() });
-    return idb;
+    const normalized = normalizeCachedPayload(idb);
+    _cache.set(hash, { payload: normalized, lastAccess: Date.now() });
+    return normalized;
   }
   return null;
 }
@@ -75,6 +77,14 @@ async function setIdbCache(hash, payload) {
       tx.onerror = () => rej(tx.error);
     });
   } catch { /* ignore */ }
+}
+
+function normalizeCachedPayload(p) {
+  if (!p) return null;
+  const cloned = structuredClonePayload(p);
+  cloned.extracted = normalizeExtraction(cloned.extracted);
+  cloned.extractedList = (cloned.extractedList || [cloned.extracted]).map(normalizeExtraction);
+  return cloned;
 }
 
 function structuredClonePayload(p) {

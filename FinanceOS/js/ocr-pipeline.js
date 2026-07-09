@@ -7,7 +7,9 @@ import { preprocessFast } from './ocr-preprocess.js';
 import { borrowWorker, releaseWorker, extractAllFields } from './ocr.js';
 import { refineExtraction } from './ocr-confidence.js';
 import * as extractors from './ocr.js';
-import { matchSupplier } from './ocr.js';
+import { blankExtraction, normalizeExtraction } from './extraction-schema.js';
+import { matchSupplierCached } from './match-cache.js';
+import { logStageError } from './upload-safe.js';
 import { computeFileHash, getCachedOcr, setCachedOcr } from './ocr-cache.js';
 import {
   startOcrJob, throwIfAborted, createTimings, cleanupOcrMemory,
@@ -94,9 +96,10 @@ export async function runOcrPipeline(file, {
     timings.mark('render');
   } catch (e) {
     if (e.name === 'AbortError') throw e;
+    logStageError('render', e);
     errors.push(`render: ${e.message}`);
     timings.finish();
-    return emptyResult(file, errors, timings.marks);
+    return emptyResult(file, errors, timings.marks, bundle);
   }
 
   throwIfAborted(externalSignal);
@@ -173,14 +176,20 @@ export async function runOcrPipeline(file, {
   progress.setStage('extract', 'Εξαγωγή πεδίων…');
   timings.mark('regex_start');
 
-  let extracted = extractAllFields(allPages, fullText);
-  extracted = refineExtraction(extracted, fullText, allPages, {
-    extractAfm: extractors.extractAfm,
-    extractInvoiceNumber: extractors.extractInvoiceNumber,
-    extractDate: extractors.extractDate,
-    extractSapDocCandidates: extractors.extractSapDocCandidates,
-    extractSupplierNameHint: extractors.extractSupplierNameHint,
-  });
+  let extracted = blankExtraction();
+  try {
+    extracted = normalizeExtraction(extractAllFields(allPages, fullText));
+    extracted = normalizeExtraction(refineExtraction(extracted, fullText, allPages, {
+      extractAfm: extractors.extractAfm,
+      extractInvoiceNumber: extractors.extractInvoiceNumber,
+      extractDate: extractors.extractDate,
+      extractSapDocCandidates: extractors.extractSapDocCandidates,
+      extractSupplierNameHint: extractors.extractSupplierNameHint,
+    }));
+  } catch (e) {
+    logStageError('extract', e);
+    errors.push(`extract: ${e.message}`);
+  }
 
   const ocrConfidence = computeMeanConfidence(allPages, bundle.embeddedPages);
   extracted._meanOcrConfidence = ocrConfidence;
@@ -191,10 +200,19 @@ export async function runOcrPipeline(file, {
     : (bundle.embeddedFullText ? 'fast OCR + PDF text' : 'fast OCR');
 
   progress.setStage('match', 'Supplier matching…');
-  const { best, all: supplierCandidates } = matchSupplier(extracted.afm, extracted.supplier_name_hint, fullText);
-  extracted.confidence_supplier = best
-    ? best.confidence
-    : (supplierCandidates[0]?.confidence || 0);
+  let best = null;
+  let supplierCandidates = [];
+  try {
+    const m = matchSupplierCached(extracted.afm, extracted.supplier_name_hint, fullText);
+    best = m.best;
+    supplierCandidates = m.all || [];
+    extracted.confidence_supplier = best
+      ? safeConfOrNull(best.confidence)
+      : safeConfOrNull(supplierCandidates[0]?.confidence);
+  } catch (e) {
+    logStageError('supplier', e);
+    errors.push(`supplier: ${e.message}`);
+  }
   timings.mark('supplier');
 
   progress.setStage('validate', 'Έλεγχος…');
@@ -219,7 +237,13 @@ export async function runOcrPipeline(file, {
   timings.finish();
   progress.setStage('done', 'Ολοκληρώθηκε');
 
-  return buildResult(file, payload, timings.marks, errors, bundle.previewCanvases);
+  const partial = errors.length > 0;
+  return buildResult(file, payload, timings.marks, errors, bundle.previewCanvases, { partial });
+}
+
+function safeConfOrNull(v) {
+  if (v == null || Number.isNaN(Number(v))) return null;
+  return Math.round(Number(v));
 }
 
 /** @deprecated use runOcrPipeline — kept for imports */
@@ -254,7 +278,8 @@ function computeMeanConfidence(ocrPages, embeddedPages) {
     : 0;
 }
 
-function buildResult(file, payload, timings, errors, previewCanvases) {
+function buildResult(file, payload, timings, errors, previewCanvases, { partial = false } = {}) {
+  const extracted = normalizeExtraction(payload.extracted);
   return {
     filename: file.name,
     fileSize: file.size,
@@ -263,43 +288,40 @@ function buildResult(file, payload, timings, errors, previewCanvases) {
     timings,
     engine: payload.engine || 'fast OCR',
     fullText: payload.fullText || '',
-    extracted: payload.extracted,
-    extractedList: payload.extractedList || [payload.extracted],
+    extracted,
+    extractedList: (payload.extractedList || [extracted]).map(normalizeExtraction),
     canvases: previewCanvases || payload.previewCanvases || [],
     previewDataUrls: payload.previewDataUrls,
-    supplierHint: payload.extracted?.supplier_name_hint,
+    supplierHint: extracted.supplier_name_hint,
     supplierMatch: payload.supplierMatch,
     ocrConfidence: payload.ocrConfidence || 0,
     errors: errors || [],
-    success: true,
+    success: !partial || extracted.afm || extracted.invoice_number || extracted.sap_doc_number,
+    partial,
     cached: !!timings?.cache_hit,
+    manualMode: partial && !extracted.afm && !extracted.invoice_number,
   };
 }
 
-function emptyResult(file, errors, timings) {
+function emptyResult(file, errors, timings, bundle = null) {
   return {
     filename: file.name,
     fileSize: file.size,
-    pageCount: 0,
+    pageCount: bundle?.pageCount || 0,
     processingMs: timings?.total || 0,
     timings,
-    engine: 'failed',
-    fullText: '',
+    engine: bundle ? 'partial' : 'failed',
+    fullText: bundle?.embeddedFullText || '',
     extracted: blankExtraction(),
     extractedList: [blankExtraction()],
-    canvases: [],
+    canvases: bundle?.previewCanvases || [],
     errors,
     success: false,
+    partial: !!bundle,
+    manualMode: true,
   };
 }
 
-function blankExtraction() {
-  return {
-    afm: null, invoice_number: null, invoice_date: null, sap_doc_number: null,
-    supplier_name_hint: null, confidence_afm: 0, confidence_invoice_no: 0,
-    confidence_date: 0, confidence_sap_doc: 0, confidence_supplier: 0,
-    sap_doc_candidates: [],
-  };
-}
+export { blankExtraction } from './extraction-schema.js';
 
 export { cleanupOcrMemory, cancelOcrJob } from './ocr-session.js';

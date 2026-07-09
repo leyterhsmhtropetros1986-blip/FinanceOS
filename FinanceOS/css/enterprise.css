@@ -211,6 +211,61 @@
 
 .btn-theme:hover { background: var(--sidebar-hover); }
 
+/* ─── Upload status badge ────────────────────────────── */
+.upload-status-badge {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--text-muted);
+}
+
+.upload-status--loading { background: var(--bg-sunken); color: var(--text-muted); }
+.upload-status--ocr, .upload-status--ocr-done { background: var(--warn-soft); color: var(--warn); }
+.upload-status--ai { background: var(--accent-soft); color: var(--accent); }
+.upload-status--ready { background: var(--ok-soft); color: var(--ok); }
+.upload-status--manual { background: var(--err-soft); color: var(--err); }
+
+.confidence-subhead {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.pipeline-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 10px 0;
+  padding: 8px;
+  background: var(--bg-sunken);
+  border-radius: var(--r-sm);
+  font-size: 10px;
+}
+
+.pipeline-row {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  gap: 8px;
+  align-items: center;
+  color: var(--text-subtle);
+}
+
+.pipeline-row.is-active { color: var(--accent); }
+.pipeline-row.is-done { color: var(--ok); }
+.pipeline-row.is-fail { color: var(--err); }
+
+.pipeline-label { font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
+
+.review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 /* ─── Bulk actions bar ───────────────────────────────── */
 .bulk-actions {
   display: flex;

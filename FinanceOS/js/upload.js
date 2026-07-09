@@ -8,9 +8,19 @@ import {
   storeArchivedFile, splitPdfByPages, downloadArchiveZip, buildArchiveRelPath,
 } from './storage.js';
 import { runOcrPipeline, beginOcrExtraction, cancelOcrJob } from './ocr-pipeline.js';
+import { renderDocumentOnce } from './ocr-render.js';
+import { computeFileHash } from './ocr-cache.js';
 import {
   matchSupplier, validateForArchive, buildArchiveFilename,
 } from './ocr.js';
+import {
+  normalizeOcrResult, normalizeExtraction, meanConfidence, blankExtraction,
+} from './extraction-schema.js';
+import { friendlyMessage, logStageError, USER_FALLBACK, runSyncSafe } from './upload-safe.js';
+import { setUploadStatus, setStageProgress, resetStageProgress } from './upload-status.js';
+import { matchSupplierCached } from './match-cache.js';
+import { getCachedAi, setCachedAi } from './ai-cache.js';
+import { runClaudeVisionOCRDirect } from './ai.js';
 import {
   enqueueFiles, setJobProcessor, onQueueChange, cancelQueue,
   setJobStage, completeJob, failJob, isQueueRunning, getJobs,
@@ -186,14 +196,16 @@ export async function processBatchItem(item, useAI) {
   try {
     const { signal } = beginOcrExtraction();
     result = await runOcrPipeline(file, { onProgress: () => {}, signal });
+    result = normalizeOcrResult(result, file);
   } catch (e) {
     item.status = 'failed';
-    item.error = e.message;
+    item.error = USER_FALLBACK;
+    logStageError('batch-ocr', e);
     throw e;
   }
   item.result = result;
 
-  const invoices = result.extractedList || [result.extracted];
+  const invoices = (result.extractedList || [result.extracted]).map(normalizeExtraction);
   const isMulti = invoices.length > 1;
   if (isMulti) {
     audit('unmerge', 'success', `Detected ${invoices.length} invoices in one PDF`,
@@ -268,7 +280,7 @@ export async function processBatchItem(item, useAI) {
       extracted.invoice_date &&
       extracted.sap_doc_number &&
       /^\d{6,12}$/.test(String(extracted.sap_doc_number).replace(/\D/g, '')) &&
-      extracted.confidence_sap_doc >= 70;
+      (extracted.confidence_sap_doc ?? 0) >= 70;
 
     // Πρώτα έλεγξε αν υπάρχει ήδη (duplicate)
     const duplicate = canAutoArchive
@@ -460,7 +472,7 @@ export function openBatchItemForReview(idx) {
   $('#batch-panel').hidden = true;
   $('#review').hidden = false;
   showReviewPanel(item.file, invoice, [], null);
-  populateReviewFromOCR(item.result, item.file, invoice);
+  applyOcrResultToReview(item.result, item.file, invoice);
   applyPreviewFromResult(item.result);
 }
 
@@ -762,60 +774,203 @@ export async function handleFile(originalFile) {
     }
   } catch (e) {
     invoice.status = 'error';
-    invoice.status_message = e.message;
-    audit('unwrap', 'failure', e.message, { invoice_id: invoice.id });
+    invoice.status_message = USER_FALLBACK;
+    logStageError('unwrap', e, invoice.id);
     $('#upload-progress').hidden = true;
     $('#upload-zone').hidden = false;
-    toast(e.message, 'err');
+    toast(USER_FALLBACK, 'warn');
     window.dispatchEvent(new CustomEvent('review-badge-update'));
     return;
   }
 
-  // Step 2: Single-pass pipeline — one render, one OCR, extract from text
+  // Step 2: Preview first (<200ms goal) — never white screen
   state.currentInvoiceId = invoice.id;
-  state.currentUpload = { file, wrapper, canvases: [], invoice };
-  showReviewPanel(file, invoice, [], wrapper);
-  updateStagePipeline('preview');
+  state.currentUpload = { file, wrapper, canvases: [], invoice, renderBundle: null };
   $('#upload-progress').hidden = true;
   $('#review').hidden = false;
-  updateProgressInReview('Render → OCR → Extract…');
+  resetStageProgress();
+  setStageProgress({ upload: { pct: 1, state: 'done' }, preview: { pct: 0.25, state: 'active' } });
+  setUploadStatus('loading', 'Φόρτωση preview…');
+  showReviewPanel(file, invoice, [], wrapper);
+  updateStagePipeline('preview');
+
+  let renderBundle = null;
+  try {
+    renderBundle = await renderDocumentOnce(file, {
+      onProgress: (m) => setUploadStatus('preview', m),
+    });
+    state.currentUpload.renderBundle = renderBundle;
+    state.currentUpload.canvases = renderBundle.previewCanvases || [];
+    applyPreviewFromResult({
+      canvases: renderBundle.previewCanvases,
+      pageCount: renderBundle.pageCount,
+    });
+    setStageProgress({
+      upload: { pct: 1, state: 'done' },
+      preview: { pct: 1, state: 'done' },
+      ocr: { pct: 0, state: 'active' },
+    });
+    updateStagePipeline('preview', true);
+  } catch (e) {
+    logStageError('preview', e, invoice.id);
+    showPreviewSkeleton();
+  }
+
+  // Step 3: OCR pipeline (reuses render bundle — no second render)
+  setUploadStatus('ocr');
   updateStagePipeline('ocr');
 
   try {
-    const result = await runOcrPipeline(file, {
-      onProgress: (msg) => updateProgressInReview(msg),
+    const result = normalizeOcrResult(await runOcrPipeline(file, {
+      onProgress: (msg) => {
+        setUploadStatus('ocr', msg);
+        setStageProgress({
+          upload: { pct: 1, state: 'done' },
+          preview: { pct: 1, state: 'done' },
+          ocr: { pct: 0.75, state: 'active' },
+        });
+      },
       signal,
-    });
+      renderBundle,
+    }), file);
     if (signal.aborted) return;
     if (wrapper) result.wrapper = wrapper;
 
-    applyPreviewFromResult(result);
+    if (result.canvases?.length) {
+      applyPreviewFromResult(result);
+    }
     state.currentUpload.result = result;
-    populateReviewFromOCR(result, file, invoice);
-    audit('ocr', 'success', `${result.engine} · ${result.processingMs}ms`,
-      { invoice_id: invoice.id, details: { engine: result.engine, timings: result.timings, cached: result.cached } });
+    applyOcrResultToReview(result, file, invoice);
 
-    const timingMsg = result.timings ? ` (${Object.entries(result.timings).map(([k, v]) => `${k}:${v}ms`).join(' ')})` : '';
+    setStageProgress({
+      upload: { pct: 1, state: 'done' },
+      preview: { pct: 1, state: 'done' },
+      ocr: { pct: 1, state: 'done' },
+      ai: { pct: 0, state: 'idle' },
+      save: { pct: 0, state: 'idle' },
+    });
+
+    audit('ocr', result.partial ? 'warning' : 'success',
+      `${result.engine} · ${result.processingMs}ms`,
+      { invoice_id: invoice.id, details: { engine: result.engine, timings: result.timings, cached: result.cached, partial: result.partial } });
+
     if (result.cached) {
-      toast(`✓ Cache hit — instant extraction${timingMsg}`, 'ok');
-    } else if (result.engine?.includes('PDF text')) {
-      toast(`✓ PDF text extraction · ${result.processingMs}ms`, 'ok');
+      setUploadStatus('ready', 'Cache — έτοιμο');
+      toast('✓ Αναγνωρίστηκε από cache', 'ok');
+    } else if (result.manualMode || result.partial) {
+      setUploadStatus('manual');
+      toast(USER_FALLBACK, 'warn');
     } else if (result.extracted?.afm || result.extracted?.sap_doc_number) {
-      toast(`✓ OCR ολοκληρώθηκε σε ${result.processingMs}ms`, 'ok');
+      setUploadStatus('ocr_done');
+      toast(`✓ OCR ολοκληρώθηκε · ${result.processingMs}ms`, 'ok');
     } else {
-      toast('OCR ολοκληρώθηκε — έλεγξε τα πεδία χειροκίνητα', 'warn');
+      setUploadStatus('manual');
+      toast(USER_FALLBACK, 'warn');
     }
   } catch (e) {
     if (e.name === 'AbortError') return;
-    console.error('Extraction error:', e);
-    invoice.status = 'needs_review';
-    invoice.status_message = e.message;
-    audit('ocr', 'failure', e.message, { invoice_id: invoice.id });
-    updateProgressInReview(`${e.message} — συμπλήρωσε χειροκίνητα`, true);
-    $('#mean-confidence').textContent = 'extraction failed — manual entry';
-    toast(`Σφάλμα: ${e.message}`, 'err');
-    window.dispatchEvent(new CustomEvent('review-badge-update'));
+    enterManualMode(invoice, e, renderBundle);
   }
+}
+
+function showPreviewSkeleton() {
+  const container = $('#preview-container');
+  if (!container) return;
+  container.innerHTML = '<div class="preview-skeleton skeleton" style="height:320px;border-radius:8px;"></div><p style="font-size:12px;color:var(--text-muted);margin-top:8px;">Φόρτωση preview…</p>';
+}
+
+function enterManualMode(invoice, err, renderBundle) {
+  logStageError('pipeline', err, invoice.id);
+  invoice.status = 'needs_review';
+  invoice.status_message = USER_FALLBACK;
+  if (renderBundle?.previewCanvases?.length) {
+    applyPreviewFromResult({ canvases: renderBundle.previewCanvases, pageCount: renderBundle.pageCount });
+  }
+  const partial = state.currentUpload?.result;
+  if (partial) {
+    applyOcrResultToReview(normalizeOcrResult(partial, state.currentUpload.file), state.currentUpload.file, invoice);
+  } else {
+    applyManualEntryShell(invoice);
+  }
+  setUploadStatus('manual');
+  setStageProgress({
+    upload: { pct: 1, state: 'done' },
+    preview: { pct: 1, state: renderBundle ? 'done' : 'fail' },
+    ocr: { pct: 0, state: 'fail' },
+  });
+  toast(USER_FALLBACK, 'warn');
+  window.dispatchEvent(new CustomEvent('review-badge-update'));
+}
+
+function applyManualEntryShell(invoice) {
+  ['afm', 'invno', 'date', 'sap', 'sup'].forEach((f) => setConfidence(f, null));
+  populateSupplierDropdown(null, []);
+  populateSAPDropdown([], null);
+  invoice.status = 'needs_review';
+  updateStagePipeline('validation', true);
+}
+
+export async function retryOcrForCurrent() {
+  const upload = state.currentUpload;
+  if (!upload?.file || !state.currentInvoiceId) return;
+  const invoice = state.invoices.find((i) => i.id === state.currentInvoiceId);
+  if (!invoice) return;
+  setUploadStatus('ocr', 'Επανάληψη OCR…');
+  audit('ocr', 'success', 'Retry OCR requested', { invoice_id: invoice.id, actor: 'user' });
+  try {
+    const { signal } = beginOcrExtraction();
+    const result = normalizeOcrResult(await runOcrPipeline(upload.file, {
+      renderBundle: upload.renderBundle,
+      signal,
+      fileHash: null,
+    }), upload.file);
+    upload.result = result;
+    if (result.canvases?.length) applyPreviewFromResult(result);
+    applyOcrResultToReview(result, upload.file, invoice);
+    setUploadStatus(result.manualMode ? 'manual' : 'ocr_done');
+    toast(result.manualMode ? USER_FALLBACK : '✓ Επανάληψη OCR ολοκληρώθηκε', result.manualMode ? 'warn' : 'ok');
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    enterManualMode(invoice, e, upload.renderBundle);
+  }
+}
+
+export async function retryAiForCurrent() {
+  const upload = state.currentUpload;
+  if (!upload?.file || !state.settings?.apiKey) {
+    toast('Ρυθμίστε API key για AI', 'warn');
+    return;
+  }
+  const invoice = state.invoices.find((i) => i.id === state.currentInvoiceId);
+  if (!invoice) return;
+  setUploadStatus('ai', 'Επανάληψη AI…');
+  try {
+    const hash = await computeFileHash(upload.file);
+    let aiPayload = getCachedAi(hash);
+    if (!aiPayload) {
+      const aiResult = await runClaudeVisionOCRDirect(upload.file, (m) => setUploadStatus('ai', m));
+      aiPayload = { extracted: normalizeExtraction(aiResult.extracted), engine: 'Claude' };
+      setCachedAi(hash, aiPayload);
+    }
+    const base = normalizeOcrResult(upload.result || {}, upload.file);
+    const merged = { ...base, extracted: { ...base.extracted, ...aiPayload.extracted }, engine: `${base.engine} + AI` };
+    upload.result = merged;
+    applyOcrResultToReview(merged, upload.file, invoice);
+    setUploadStatus('ready');
+    audit('ocr', 'success', 'AI retry', { invoice_id: invoice.id, actor: 'user' });
+    toast('✓ AI εμπλουτισμός ολοκληρώθηκε', 'ok');
+  } catch (e) {
+    logStageError('ai', e, invoice.id);
+    setUploadStatus('manual');
+    toast(USER_FALLBACK, 'warn');
+  }
+}
+
+/** Safe wrapper — never throws to UI */
+export function applyOcrResultToReview(result, file, invoice) {
+  runSyncSafe('review', () => {
+    populateReviewFromOCR(normalizeOcrResult(result, file), file, invoice);
+  }, () => applyManualEntryShell(invoice));
 }
 
 export function updateProgressInReview(msg, isError = false) {
@@ -834,8 +989,9 @@ export function showReviewPanel(file, invoice, canvases, wrapper) {
   $('#engine-badge').textContent = wrapper || 'preview';
 
   // Confidence bars empty
-  ['afm', 'invno', 'date', 'sap', 'sup'].forEach(f => setConfidence(f, 0));
-  $('#mean-confidence').textContent = 'OCR pending…';
+  ['afm', 'invno', 'date', 'sap', 'sup'].forEach((f) => setConfidence(f, null));
+  setUploadStatus('loading');
+  resetStageProgress();
 
   // Fields empty (χρήστης θα τα γεμίσει ή θα τα γεμίσει το OCR)
   $('#fld-afm').value = '';
@@ -892,24 +1048,33 @@ export function renderPreview(canvasesOrUrls) {
 }
 
 export function populateReviewFromOCR(result, file, invoice) {
-  const ext = result.extracted;
+  const ext = normalizeExtraction(result?.extracted);
 
   setConfidence('afm', ext.confidence_afm);
   setConfidence('invno', ext.confidence_invoice_no);
   setConfidence('date', ext.confidence_date);
   setConfidence('sap', ext.confidence_sap_doc);
 
-  // Fill fields μόνο αν είναι άδεια (μη overwrite του user typing)
   if (!$('#fld-afm').value) $('#fld-afm').value = ext.afm || '';
   if (!$('#fld-invno').value) $('#fld-invno').value = ext.invoice_number || '';
   if (!$('#fld-date').value && ext.invoice_date) $('#fld-date').value = fmtISODate(ext.invoice_date);
-  if (ext.sap_doc_number) {
+  if (ext.sap_doc_number && !$('#fld-sap-manual').value) {
     $('#fld-sap-manual').value = ext.sap_doc_number;
   }
 
-  const fullText = result.fullText || '';
-  const { best, all } = matchSupplier(ext.afm, ext.supplier_name_hint, fullText);
-  ext.confidence_supplier = best ? best.confidence : (all[0] ? all[0].confidence : 0);
+  const fullText = result?.fullText || '';
+  let best = null;
+  let all = [];
+  try {
+    const m = matchSupplierCached(ext.afm, ext.supplier_name_hint, fullText);
+    best = m.best;
+    all = m.all || [];
+    ext.confidence_supplier = best
+      ? safeConf(best.confidence)
+      : safeConf(all[0]?.confidence);
+  } catch (e) {
+    logStageError('supplier-ui', e, invoice?.id);
+  }
   setConfidence('sup', ext.confidence_supplier);
 
   invoice.afm = ext.afm;
@@ -918,20 +1083,23 @@ export function populateReviewFromOCR(result, file, invoice) {
   invoice.sap_doc_number = ext.sap_doc_number;
   invoice.supplier_id = best ? best.supplier_id : null;
   invoice.status = 'needs_review';
-  invoice.page_count = result.pageCount;
+  invoice.page_count = result?.pageCount || 0;
 
   populateSupplierDropdown(best, all);
   populateSAPDropdown(ext.sap_doc_candidates, ext.sap_doc_number);
   renderSAPCandidates(ext.sap_doc_candidates);
   renderSupplierCandidates(all);
 
-  const avg = Math.round((ext.confidence_afm + ext.confidence_invoice_no + ext.confidence_date + ext.confidence_sap_doc + ext.confidence_supplier) / 5);
-  $('#mean-confidence').textContent = `μέσος όρος: ${avg}%`;
+  const avg = meanConfidence(ext);
+  const meanEl = $('#mean-confidence');
+  if (meanEl) meanEl.textContent = avg != null ? `μέσος όρος: ${avg}%` : '—';
 
-  $('#meta-time').textContent = `${result.processingMs}ms`;
-  $('#meta-engine').textContent = result.wrapper ? `${result.engine} (${result.wrapper})` : result.engine;
+  $('#meta-time').textContent = result?.processingMs ? `${result.processingMs}ms` : '—';
+  $('#meta-engine').textContent = result?.wrapper
+    ? `${result.engine || '—'} (${result.wrapper})`
+    : (result?.engine || '—');
+  $('#engine-badge').textContent = result?.engine || 'review';
 
-  // Update hints
   $('#hint-supplier').textContent = best
     ? `✓ Auto-matched: ${best.name} (${best.confidence}%)`
     : (all.length ? `${all.length} υποψήφιοι — έλεγξε ή γράψε το ΑΦΜ` : 'Δεν βρέθηκε — γράψε το ΑΦΜ');
@@ -940,33 +1108,50 @@ export function populateReviewFromOCR(result, file, invoice) {
   const afmOk = validateAfmChecksum(ext.afm || '');
   $('#hint-afm').textContent = ext.afm
     ? (afmOk ? '✓ Έγκυρο MOD-11' : '⚠ Αποτυχία MOD-11 — έλεγξε')
-    : 'OCR δεν βρήκε ΑΦΜ — γράψε το που βλέπεις';
+    : 'Συμπληρώστε το ΑΦΜ χειροκίνητα';
   $('#hint-afm').className = 'field-hint ' + (afmOk ? 'ok' : 'warn');
 
-  const sapAuto = ext.confidence_sap_doc >= 90;
+  const sapConf = ext.confidence_sap_doc;
+  const sapAuto = sapConf != null && sapConf >= 90;
   $('#hint-sap').textContent = sapAuto
     ? '✓ Αυτόματη επιλογή (υψηλή αξιοπιστία)'
     : ext.sap_doc_number
-      ? `⚠ Χαμηλή αξιοπιστία (${ext.confidence_sap_doc}%) — έλεγξε`
-      : 'Το OCR δεν βρήκε SAP Doc No — γράψε το χειρόγραφο που βλέπεις';
+      ? `⚠ Έλεγξε το SAP Doc${sapConf != null ? ` (${sapConf}%)` : ''}`
+      : 'Γράψε το χειρόγραφο SAP Doc No';
   $('#hint-sap').className = 'field-hint ' + (sapAuto ? 'ok' : 'warn');
 
-  // Debug info
-  const rawText = result.fullText || '';
-  $('#debug-text').textContent = rawText.slice(0, 5000);
-  const found9 = [...rawText.matchAll(/(?<!\d)(\d{9})(?!\d)/g)]
-    .map(m => ({ afm: m[1], valid: validateAfmChecksum(m[1]) }))
-    .slice(0, 10);
-  $('#debug-afms').innerHTML = found9.length
-    ? '<strong>9ψήφια:</strong> ' + found9.map(x =>
+  try {
+    const rawText = fullText;
+    $('#debug-text').textContent = rawText.slice(0, 5000);
+    const found9 = [...rawText.matchAll(/(?<!\d)(\d{9})(?!\d)/g)]
+      .map((m) => ({ afm: m[1], valid: validateAfmChecksum(m[1]) }))
+      .slice(0, 10);
+    $('#debug-afms').innerHTML = found9.length
+      ? '<strong>9ψήφια:</strong> ' + found9.map((x) =>
         `<span class="mono">${x.afm}</span>${x.valid ? '✓' : '✗'}`
       ).join(' · ')
-    : '<em style="color:var(--err)">Δεν βρέθηκαν 9ψήφια στο κείμενο</em>';
+      : '<em style="color:var(--text-muted)">—</em>';
+  } catch (e) {
+    logStageError('debug', e, invoice?.id);
+  }
 
   updateStagePipeline('validation', true);
-  appendTimelineEvent(invoice.id, 'ocr', `${result.engine} · ${result.processingMs}ms`);
+  appendTimelineEvent(invoice.id, 'ocr', `${result?.engine || 'OCR'} · ${result?.processingMs || 0}ms`);
   const tl = $('#invoice-timeline');
   if (tl) tl.innerHTML = renderTimelineHtml(invoice.timeline);
+
+  if (result?.manualMode || result?.partial) {
+    setUploadStatus('manual');
+  } else if (avg != null && avg >= 70) {
+    setUploadStatus('ready');
+  } else {
+    setUploadStatus('ocr_done');
+  }
+}
+
+function safeConf(v) {
+  if (v == null || Number.isNaN(Number(v))) return null;
+  return Math.round(Number(v));
 }
 
 export function updateStagePipeline(activeStage, markDone = false) {
@@ -1043,10 +1228,19 @@ export function handleAfmInput() {
 export function setConfidence(field, pct) {
   const bar = $(`#conf-${field}`);
   const label = $(`#conf-${field}-pct`);
-  const cls = confidenceClass(pct);
-  bar.style.width = `${Math.max(pct, 3)}%`;
+  if (!bar || !label) return;
+  if (pct == null || pct === undefined || Number.isNaN(pct)) {
+    bar.style.width = '0%';
+    bar.className = 'conf-bar';
+    label.textContent = '—';
+    label.className = 'conf-pct';
+    return;
+  }
+  const n = Math.max(0, Math.min(100, Math.round(pct)));
+  const cls = confidenceClass(n);
+  bar.style.width = `${Math.max(n, 3)}%`;
   bar.className = `conf-bar ${cls}`;
-  label.textContent = `${pct}%`;
+  label.textContent = `${n}%`;
   label.className = `conf-pct ${cls}`;
 }
 
@@ -1215,6 +1409,8 @@ export function initUpload() {
 
   $('#btn-archive')?.addEventListener('click', onArchiveClick);
   $('#btn-cancel')?.addEventListener('click', onCancelClick);
+  $('#btn-retry-ocr')?.addEventListener('click', () => retryOcrForCurrent());
+  $('#btn-retry-ai')?.addEventListener('click', () => retryAiForCurrent());
   $('#btn-toggle-debug')?.addEventListener('click', onToggleDebug);
   $('#fld-afm')?.addEventListener('input', handleAfmInput);
   $('#preview-zoom-in')?.addEventListener('click', () => {

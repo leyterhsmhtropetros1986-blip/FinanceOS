@@ -24,6 +24,7 @@ function fmtISODate(iso) {
   return new Date(iso).toISOString().slice(0, 10);
 }
 function confidenceClass(pct) {
+  if (pct == null || pct === undefined || Number.isNaN(pct)) return '';
   if (pct >= 90) return 'ok';
   if (pct >= 70) return 'warn';
   return 'err';

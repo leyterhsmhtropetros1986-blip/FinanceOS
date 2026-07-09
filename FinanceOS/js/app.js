@@ -42,6 +42,7 @@ window.addEventListener('error', (e) => {
 });
 window.addEventListener('unhandledrejection', (e) => {
   console.error('Unhandled rejection:', e.reason);
+  e.preventDefault?.();
 });
 
 // BOOT
