@@ -159,11 +159,12 @@ export async function resolveSupplierFolder(sapCode, defaultName) {
 
 export function idbOpen() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open('parastatika', 2);
+    const req = indexedDB.open('parastatika', 3);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains('handles')) db.createObjectStore('handles');
       if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
+      if (!db.objectStoreNames.contains('ocrCache')) db.createObjectStore('ocrCache');
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);

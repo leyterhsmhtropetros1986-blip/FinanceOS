@@ -42,6 +42,8 @@
 <link rel="stylesheet" href="css/modals.css" />
 <link rel="stylesheet" href="css/utilities.css" />
 <link rel="stylesheet" href="css/archive.css" />
+<link rel="stylesheet" href="css/enterprise.css" />
+<link rel="stylesheet" href="css/responsive.css" />
 <script>
 (function () {
   var p = location.pathname;
@@ -98,6 +100,7 @@
     </nav>
 
     <div class="sidebar-footer">
+      <button type="button" class="btn-theme" id="btn-theme-toggle" title="Dark mode">🌙</button>
       <div class="health-dot"></div>
       <span id="engine-status">demo mode · ell+eng</span>
     </div>
@@ -155,10 +158,27 @@
     <section class="view" id="view-upload">
       <header class="view-head">
         <div>
-          <h1>Ανέβασμα Τιμολογίου</h1>
-          <p>Σύρετε PDF ή επιλέξτε αρχείο. Το OCR εντοπίζει τα πεδία και προτείνει προμηθευτή.</p>
+          <h1>Ανέβασμα Παραστατικών</h1>
+          <p>Enterprise upload — drag, paste, bulk 300 PDF, parallel OCR queue.</p>
+        </div>
+        <div class="view-actions">
+          <button type="button" class="btn btn-secondary" id="btn-merge-pdfs">Merge PDFs</button>
         </div>
       </header>
+
+      <div class="upload-sources" id="upload-sources"></div>
+
+      <dialog id="merge-dialog" class="modal-dialog">
+        <form method="dialog">
+          <h3>Merge PDFs → ένα αρχείο</h3>
+          <p style="font-size:12px;color:var(--text-muted);margin:12px 0;">Επίλεξε 2+ PDF για συγχώνευση πριν το OCR.</p>
+          <input type="file" id="merge-file-input" accept=".pdf,application/pdf" multiple />
+          <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
+            <button type="button" class="btn btn-secondary" onclick="document.getElementById('merge-dialog').close()">Ακύρωση</button>
+            <button type="button" class="btn btn-primary" id="btn-merge-confirm">Merge &amp; OCR</button>
+          </div>
+        </form>
+      </dialog>
 
       <div class="upload-zone" id="upload-zone">
         <div>
@@ -166,7 +186,7 @@
           <div class="upload-text">Σύρε <strong>ένα ή πολλά</strong> αρχεία εδώ ή <label for="file-input" class="upload-link">επιλέξτε</label></div>
           <div class="upload-sub">PDF · JPG · PNG · TIFF · HEIC · MSG · EML · ZIP</div>
           <div class="upload-hint">
-            <strong>Bulk mode:</strong> ρίξε 100 τιμολόγια μαζί. Το AI θα τα επεξεργαστεί ένα-ένα και θα αρχειοθετήσει αυτόματα όσα είναι σίγουρα.
+            <strong>Enterprise queue:</strong> έως 300 PDF · 4 παράλληλα workers · Ctrl+V paste · OCR cache
           </div>
           <input type="file" id="file-input" multiple hidden />
         </div>
@@ -196,7 +216,8 @@
           </div>
         </div>
         <div style="padding:12px 20px;background:var(--bg-sunken);">
-          <div style="height:8px;background:var(--surface);border-radius:4px;overflow:hidden;">
+          <div class="queue-stage-bar" id="queue-stage-bar"></div>
+          <div style="height:8px;background:var(--surface);border-radius:4px;overflow:hidden;margin-top:10px;">
             <div id="batch-progress-bar" style="height:100%;width:0;background:var(--accent);transition:width 0.3s ease;"></div>
           </div>
           <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:11px;color:var(--text-muted);font-family:var(--font-mono);">
@@ -205,6 +226,10 @@
           </div>
         </div>
         <div id="batch-queue" style="max-height:500px;overflow-y:auto;"></div>
+        <div class="bulk-actions" id="bulk-actions" hidden>
+          <button type="button" class="btn btn-primary" id="btn-save-all">Save All (archived)</button>
+          <span style="font-size:11px;color:var(--text-muted);">Ctrl+S για αποθήκευση τρέχοντος</span>
+        </div>
         <div id="batch-summary" hidden style="padding:16px 20px;border-top:1px solid var(--border);background:var(--surface-alt);">
         </div>
       </div>
@@ -216,9 +241,16 @@
           <div class="engine-badge" id="engine-badge"></div>
         </div>
 
-        <div class="review-grid">
+        <div class="review-grid resizable" id="review-grid">
           <!-- Preview τιμολογίου — αριστερά -->
           <div class="preview-panel">
+            <div class="stage-pipeline" id="stage-pipeline">
+              <div class="stage-step" data-stage="upload">Upload</div>
+              <div class="stage-step" data-stage="preview">Preview</div>
+              <div class="stage-step" data-stage="ocr">OCR</div>
+              <div class="stage-step" data-stage="validation">Validation</div>
+              <div class="stage-step" data-stage="save">Save</div>
+            </div>
             <div class="preview-toolbar">
               <button id="preview-zoom-out">−</button>
               <span id="preview-zoom-label" class="mono" style="min-width:50px;text-align:center;">100%</span>
@@ -226,9 +258,11 @@
               <span id="preview-page-info" style="margin-left:auto;color:var(--text-muted);"></span>
             </div>
             <div class="preview-container" id="preview-container">
-              <div class="preview-loading">Φόρτωση…</div>
+              <div class="preview-loading skeleton" style="height:200px;">Φόρτωση…</div>
             </div>
           </div>
+
+          <div class="review-splitter" id="review-splitter" title="Resize"></div>
 
           <!-- Πεδία — δεξιά -->
           <div class="review-fields">
@@ -316,7 +350,11 @@
 
             <div class="review-actions">
               <button class="btn btn-secondary" id="btn-cancel">Ακύρωση</button>
-              <button class="btn btn-primary" id="btn-archive">Αρχειοθέτηση</button>
+              <button class="btn btn-primary" id="btn-archive">Αρχειοθέτηση (Ctrl+S)</button>
+            </div>
+            <div class="side-block" id="timeline-block" style="margin-top:12px;">
+              <div class="side-block-title">Timeline</div>
+              <div id="invoice-timeline"></div>
             </div>
           </div>
         </div>

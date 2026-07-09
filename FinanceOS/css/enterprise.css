@@ -1,0 +1,221 @@
+/* Parastatika V3 — Enterprise UI */
+
+/* ─── Dark theme ─────────────────────────────────────── */
+[data-theme="dark"] {
+  --bg:            #12100E;
+  --bg-sunken:     #1A1714;
+  --surface:       #1F1C18;
+  --surface-alt:   #252119;
+  --border:        #3A342C;
+  --border-strong: #524A3F;
+  --text:          #F0EBE3;
+  --text-muted:    #A89E90;
+  --text-subtle:   #7A7268;
+  --accent:        #4A9E97;
+  --accent-hover:  #5BB5AD;
+  --accent-soft:   #1E3331;
+  --accent-glow:   rgba(74, 158, 151, 0.2);
+  --ok-soft:       #1A2E24;
+  --warn-soft:     #2E2210;
+  --err-soft:      #2E1818;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.3);
+  --shadow-md: 0 8px 24px rgba(0,0,0,0.4);
+}
+
+[data-theme="dark"] .preview-panel { background: #2A2620; }
+[data-theme="dark"] .chart-card { background: var(--surface); }
+
+/* ─── Upload sources toolbar ─────────────────────────── */
+.upload-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+}
+
+.upload-src-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  transition: all 0.15s ease;
+}
+
+.upload-src-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.upload-src-btn.is-active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.upload-src-btn--cloud { opacity: 0.85; }
+.upload-src-icon { font-size: 14px; }
+
+/* ─── Queue stages ───────────────────────────────────── */
+.queue-stage-bar {
+  display: flex;
+  gap: 4px;
+  padding: 10px 20px;
+  background: var(--bg-sunken);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+
+.queue-stage-pill {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-subtle);
+  white-space: nowrap;
+}
+
+.queue-stage-pill.is-active { background: var(--accent-soft); color: var(--accent); }
+.queue-stage-pill.is-done { background: var(--ok-soft); color: var(--ok); }
+.queue-stage-pill.is-fail { background: var(--err-soft); color: var(--err); }
+
+.queue-row {
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  grid-template-columns: 28px 1fr auto auto auto;
+  gap: 12px;
+  align-items: center;
+  font-size: 12px;
+  animation: fadeSlideIn 0.2s ease;
+}
+
+.queue-row-stage {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--bg-sunken);
+  color: var(--text-muted);
+}
+
+.queue-row-stage.stage-ocr { color: var(--accent); background: var(--accent-soft); }
+.queue-row-stage.stage-completed { color: var(--ok); background: var(--ok-soft); }
+.queue-row-stage.stage-failed { color: var(--err); background: var(--err-soft); }
+
+/* ─── Review stage pipeline ──────────────────────────── */
+.stage-pipeline {
+  display: flex;
+  gap: 0;
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+
+.stage-step {
+  flex: 1;
+  padding: 8px 6px;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-subtle);
+  background: var(--bg-sunken);
+  border-right: 1px solid var(--border);
+  transition: all 0.2s ease;
+}
+
+.stage-step:last-child { border-right: none; }
+.stage-step.is-active { background: var(--accent-soft); color: var(--accent); }
+.stage-step.is-done { background: var(--ok-soft); color: var(--ok); }
+
+/* ─── Timeline ───────────────────────────────────────── */
+.timeline-item {
+  display: grid;
+  grid-template-columns: 12px 1fr;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.timeline-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-top: 5px;
+}
+
+.timeline-type { font-weight: 600; }
+.timeline-time { font-size: 10px; color: var(--text-subtle); font-family: var(--font-mono); }
+
+/* ─── Animations ─────────────────────────────────────── */
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.skeleton {
+  background: linear-gradient(90deg, var(--bg-sunken) 25%, var(--border) 50%, var(--bg-sunken) 75%);
+  background-size: 200% 100%;
+  animation: skeletonShimmer 1.2s ease infinite;
+  border-radius: var(--r-sm);
+}
+
+@keyframes skeletonShimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ─── Resizable review split ─────────────────────────── */
+.review-grid.resizable {
+  grid-template-columns: minmax(280px, 1fr) 6px minmax(320px, 1fr);
+}
+
+.review-splitter {
+  cursor: col-resize;
+  background: var(--border);
+  border-radius: 3px;
+  transition: background 0.15s;
+}
+
+.review-splitter:hover { background: var(--accent); }
+
+/* ─── Theme toggle ───────────────────────────────────── */
+.btn-theme {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--sidebar-hover);
+  background: transparent;
+  color: var(--sidebar-fg);
+  font-size: 16px;
+}
+
+.btn-theme:hover { background: var(--sidebar-hover); }
+
+/* ─── Bulk actions bar ───────────────────────────────── */
+.bulk-actions {
+  display: flex;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-alt);
+}

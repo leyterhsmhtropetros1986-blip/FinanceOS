@@ -4,7 +4,7 @@
  */
 import { renderDocumentOnce } from './ocr-render.js';
 import { preprocessFast } from './ocr-preprocess.js';
-import { getWorker, extractAllFields } from './ocr.js';
+import { borrowWorker, releaseWorker, extractAllFields } from './ocr.js';
 import { refineExtraction } from './ocr-confidence.js';
 import * as extractors from './ocr.js';
 import { matchSupplier } from './ocr.js';
@@ -129,28 +129,32 @@ export async function runOcrPipeline(file, {
 
     try {
       progress.setStage('ocr', 'OCR…');
-      const worker = await getWorker((m) => progress.report(m));
-      for (let i = 0; i < processedCanvases.length; i++) {
-        throwIfAborted(externalSignal);
-        progress.report(`OCR σελ ${i + 1}/${processedCanvases.length}…`, i / processedCanvases.length);
-        const { data } = await worker.recognize(processedCanvases[i]);
-        pages.push({
-          page_number: i + 1,
-          text: data.text || '',
-          words: (data.words || []).map((w) => ({
-            text: w.text,
-            confidence: Math.round(w.confidence || 0),
-            x: w.bbox?.x0 || 0,
-            y: w.bbox?.y0 || 0,
-            w: w.bbox ? w.bbox.x1 - w.bbox.x0 : 0,
-            h: w.bbox ? w.bbox.y1 - w.bbox.y0 : 0,
-          })),
-          width: processedCanvases[i].width,
-          height: processedCanvases[i].height,
-          mean_confidence: Math.round(data.confidence || 0),
-        });
+      const worker = await borrowWorker((m) => progress.report(m));
+      try {
+        for (let i = 0; i < processedCanvases.length; i++) {
+          throwIfAborted(externalSignal);
+          progress.report(`OCR σελ ${i + 1}/${processedCanvases.length}…`, i / processedCanvases.length);
+          const { data } = await worker.recognize(processedCanvases[i]);
+          pages.push({
+            page_number: i + 1,
+            text: data.text || '',
+            words: (data.words || []).map((w) => ({
+              text: w.text,
+              confidence: Math.round(w.confidence || 0),
+              x: w.bbox?.x0 || 0,
+              y: w.bbox?.y0 || 0,
+              w: w.bbox ? w.bbox.x1 - w.bbox.x0 : 0,
+              h: w.bbox ? w.bbox.y1 - w.bbox.y0 : 0,
+            })),
+            width: processedCanvases[i].width,
+            height: processedCanvases[i].height,
+            mean_confidence: Math.round(data.confidence || 0),
+          });
+        }
+        ocrFullText = pages.map((p) => p.text).join('\n');
+      } finally {
+        releaseWorker(worker);
       }
-      ocrFullText = pages.map((p) => p.text).join('\n');
       timings.mark('ocr');
     } catch (e) {
       if (e.name === 'AbortError') throw e;

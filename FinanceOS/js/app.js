@@ -10,6 +10,8 @@ import { initUpload } from './upload.js';
 import { initSearch } from './search.js';
 import { loadArchiveBrowser, initArchiveView } from './archive.js';
 import { updateReviewBadge } from './badges.js';
+import { initTheme } from './theme.js';
+import { initKeyboardShortcuts } from './keyboard-shortcuts.js';
 import { state } from './state.js';
 import { $, toast } from './utils.js';
 import { warmupOcrWorker } from './ocr.js';
@@ -100,6 +102,8 @@ async function boot() {
   initAuditView();
   initSearch();
   initArchiveView();
+  initTheme();
+  initKeyboardShortcuts();
 
   // 4. Restore archive root handle
   const handle = await idbLoadHandle();

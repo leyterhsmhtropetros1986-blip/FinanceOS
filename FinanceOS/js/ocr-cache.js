@@ -23,11 +23,18 @@ export async function computeFileHash(file) {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export function getCachedOcr(hash) {
+export async function getCachedOcr(hash) {
   const entry = _cache.get(hash);
-  if (!entry) return null;
-  entry.lastAccess = Date.now();
-  return entry.payload;
+  if (entry) {
+    entry.lastAccess = Date.now();
+    return entry.payload;
+  }
+  const idb = await getIdbCache(hash);
+  if (idb) {
+    _cache.set(hash, { payload: idb, lastAccess: Date.now() });
+    return idb;
+  }
+  return null;
 }
 
 export function setCachedOcr(hash, payload) {
@@ -39,7 +46,35 @@ export function setCachedOcr(hash, payload) {
     }
     if (oldestKey) _cache.delete(oldestKey);
   }
-  _cache.set(hash, { payload: structuredClonePayload(payload), lastAccess: Date.now() });
+  const cloned = structuredClonePayload(payload);
+  _cache.set(hash, { payload: cloned, lastAccess: Date.now() });
+  setIdbCache(hash, cloned).catch(() => {});
+}
+
+async function getIdbCache(hash) {
+  try {
+    const { idbOpen } = await import('./storage.js');
+    const db = await idbOpen();
+    return new Promise((res) => {
+      const tx = db.transaction('ocrCache', 'readonly');
+      const req = tx.objectStore('ocrCache').get(hash);
+      req.onsuccess = () => res(req.result || null);
+      req.onerror = () => res(null);
+    });
+  } catch { return null; }
+}
+
+async function setIdbCache(hash, payload) {
+  try {
+    const { idbOpen } = await import('./storage.js');
+    const db = await idbOpen();
+    return new Promise((res, rej) => {
+      const tx = db.transaction('ocrCache', 'readwrite');
+      tx.objectStore('ocrCache').put(payload, hash);
+      tx.oncomplete = () => res();
+      tx.onerror = () => rej(tx.error);
+    });
+  } catch { /* ignore */ }
 }
 
 function structuredClonePayload(p) {

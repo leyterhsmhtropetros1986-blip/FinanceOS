@@ -11,6 +11,15 @@ import { runOcrPipeline, beginOcrExtraction, cancelOcrJob } from './ocr-pipeline
 import {
   matchSupplier, validateForArchive, buildArchiveFilename,
 } from './ocr.js';
+import {
+  enqueueFiles, setJobProcessor, onQueueChange, cancelQueue,
+  setJobStage, completeJob, failJob, isQueueRunning, getJobs,
+  resetQueue, DEFAULT_CONCURRENCY,
+} from './queue-manager.js';
+import { initUploadEngine } from './upload-engine.js';
+import { categorizeInvoice } from './categories.js';
+import { appendTimelineEvent, renderTimelineHtml } from './timeline.js';
+import { boostSupplierFromLearning, recordCorrection } from './ocr-learning.js';
 
 let uploadZoneEl;
 let fileInputEl;
@@ -28,69 +37,141 @@ state.batch = {
 };
 
 export async function handleBatch(files) {
-  // Χρειάζεται AI για bulk — Tesseract είναι πολύ αργό
-  const useAI = state.settings.provider === 'anthropic' && state.settings.apiKey;
-  if (!useAI) {
-    if (!confirm(`Έχεις ${files.length} αρχεία αλλά AI OCR δεν είναι ενεργό.\n\n` +
-                 `Με Tesseract browser θα πάρει ~${Math.round(files.length * 30 / 60)} λεπτά.\n` +
-                 `Με Claude AI θα πάρει ~${Math.round(files.length * 4 / 60)} λεπτά.\n\n` +
-                 `Θες να συνεχίσεις με Tesseract;`)) return;
+  if (files.length > 300) {
+    toast('Μέγιστο 300 αρχεία ανά batch', 'err');
+    files = files.slice(0, 300);
   }
 
-  // Reset και setup queue
+  resetQueue();
   state.batch = {
-    queue: files.map((f, idx) => ({
-      idx,
-      file: f,
-      status: 'pending',   // pending | processing | archived | review | failed
-      invoice_id: null,
-      result: null,
-      error: null,
-      extracted: null,
-      supplier_match: null,
-    })),
+    queue: [],
     active: true,
     cancelled: false,
-    autoArchive: $('#batch-auto-archive').checked,
-    stats: { archived: 0, review: 0, failed: 0 },
+    autoArchive: $('#batch-auto-archive')?.checked ?? true,
+    stats: { archived: 0, review: 0, failed: 0, duplicate: 0 },
     total: files.length,
   };
 
-  // Show batch UI, hide upload zone
   $('#upload-zone').hidden = true;
   $('#upload-progress').hidden = true;
   $('#review').hidden = true;
   $('#batch-panel').hidden = false;
   $('#batch-summary').hidden = true;
-  $('#batch-title').textContent = `Bulk Processing · ${files.length} αρχεία`;
-  renderBatchQueue();
+  $('#batch-title').textContent = `Enterprise Queue · ${files.length} αρχεία`;
+  $('#batch-subtitle').textContent = `${DEFAULT_CONCURRENCY} παράλληλα workers`;
 
-  // Process sequentially
-  for (let i = 0; i < state.batch.queue.length; i++) {
-    if (state.batch.cancelled) break;
-    const item = state.batch.queue[i];
-    item.status = 'processing';
-    updateBatchProgress();
-    renderBatchQueue();
-    try {
-      await processBatchItem(item, useAI);
-    } catch (e) {
-      console.error('Batch item failed:', e);
-      item.status = 'failed';
-      item.error = e.message;
-      state.batch.stats.failed++;
-    }
-    updateBatchProgress();
-    renderBatchQueue();
-    window.dispatchEvent(new CustomEvent('review-badge-update'));
-    // Rate limit safety — 500ms between calls
-    if (i < state.batch.queue.length - 1 && useAI) {
-      await new Promise(r => setTimeout(r, 500));
-    }
-  }
+  renderQueueStageBar();
+  setupQueueProcessor();
+
+  const jobs = enqueueFiles(files);
+  state.batch.queue = jobs.map((j, idx) => ({
+    idx,
+    id: j.id,
+    file: j.file,
+    status: 'pending',
+    stage: 'waiting',
+    invoice_id: null,
+    result: null,
+    error: null,
+    extracted: null,
+    supplier_match: null,
+  }));
+
+  onQueueChange(syncQueueToBatchUI);
+
+  await waitForQueueComplete();
 
   state.batch.active = false;
+  onQueueChange(() => {});
   showBatchSummary();
+}
+
+function setupQueueProcessor() {
+  setJobProcessor(async (job) => {
+    const item = state.batch.queue.find((q) => q.id === job.id);
+    if (!item) return;
+    item.status = 'processing';
+    item.stage = job.stage;
+    try {
+      setJobStage(job.id, 'uploading', 'Unwrap…');
+      setJobStage(job.id, 'ocr', 'OCR…');
+      await processBatchItem(item, false);
+      setJobStage(job.id, 'validation', 'Έλεγχος…');
+      if (item.status === 'failed') {
+        failJob(job.id, item.error || 'failed');
+        state.batch.stats.failed++;
+      } else {
+        setJobStage(job.id, 'save', item.status === 'archived' ? 'Archived' : 'Review');
+        completeJob(job.id, item.result, item.invoice_id);
+        appendTimelineEvent(item.invoice_id, item.status === 'archived' ? 'archived' : 'ocr', item.file.name);
+      }
+    } catch (e) {
+      item.status = 'failed';
+      item.error = e.message;
+      failJob(job.id, e);
+      state.batch.stats.failed++;
+    }
+    syncQueueToBatchUI();
+    window.dispatchEvent(new CustomEvent('review-badge-update'));
+  });
+}
+
+function waitForQueueComplete() {
+  return new Promise((resolve) => {
+    const check = () => {
+      if (!isQueueRunning()) resolve();
+    };
+    const interval = setInterval(() => {
+      if (!state.batch.active && state.batch.cancelled) {
+        clearInterval(interval);
+        resolve();
+      }
+      check();
+      if (!isQueueRunning()) {
+        clearInterval(interval);
+        resolve();
+      }
+    }, 400);
+  });
+}
+
+function syncQueueToBatchUI() {
+  const jobs = getJobs();
+  for (const job of jobs) {
+    const item = state.batch.queue.find((q) => q.id === job.id);
+    if (!item) continue;
+    item.stage = job.stage;
+    if (job.stage === 'completed') item.status = item.status === 'archived' ? 'archived' : (item.status || 'review');
+    if (job.stage === 'failed') item.status = 'failed';
+    if (job.error) item.error = job.error;
+  }
+  updateBatchProgress();
+  renderBatchQueue();
+  renderQueueStageBar();
+}
+
+function renderQueueStageBar() {
+  const bar = $('#queue-stage-bar');
+  if (!bar) return;
+  const jobs = getJobs();
+  const stats = { waiting: 0, ocr: 0, validation: 0, completed: 0, failed: 0 };
+  for (const j of jobs) {
+    if (j.stage === 'waiting' || j.stage === 'uploading') stats.waiting++;
+    else if (j.stage === 'ocr' || j.stage === 'ai') stats.ocr++;
+    else if (j.stage === 'validation' || j.stage === 'save') stats.validation++;
+    else if (j.stage === 'completed') stats.completed++;
+    else if (j.stage === 'failed') stats.failed++;
+  }
+  const pills = [
+    ['Waiting', stats.waiting],
+    ['OCR', stats.ocr],
+    ['Validation', stats.validation],
+    ['Completed', stats.completed],
+    ['Failed', stats.failed],
+  ];
+  bar.innerHTML = pills.map(([label, n]) =>
+    `<span class="queue-stage-pill${n > 0 ? ' is-active' : ''}">${label} <strong>${n}</strong></span>`
+  ).join('');
 }
 
 export async function processBatchItem(item, useAI) {
@@ -138,9 +219,20 @@ export async function processBatchItem(item, useAI) {
 
     item.extracted = extracted;  // show latest in queue UI
 
-    // Supplier match
-    const { best, all } = matchSupplier(extracted.afm, extracted.supplier_name_hint);
+    // Supplier match (+ learning boost)
+    let { best, all } = matchSupplier(extracted.afm, extracted.supplier_name_hint);
+    const learned = boostSupplierFromLearning(extracted.supplier_name_hint, extracted.afm);
+    if (learned && (!best || learned.confidence > best.confidence)) {
+      const sup = state.suppliers.find((s) => s.id === learned.supplierId);
+      if (sup) best = { ...sup, supplier_id: sup.id, confidence: learned.confidence, name: sup.name };
+    }
     item.supplier_match = best;
+
+    const category = categorizeInvoice({
+      supplierName: best?.name || extracted.supplier_name_hint,
+      fullText: result.fullText,
+      afm: extracted.afm,
+    });
 
     Object.assign(invoice, {
       afm: extracted.afm,
@@ -158,6 +250,8 @@ export async function processBatchItem(item, useAI) {
       reference: extracted.reference,
       container: extracted.container,
       bill_of_lading: extracted.bill_of_lading,
+      category: category.id,
+      category_label: category.label,
       confidence_afm: extracted.confidence_afm,
       confidence_invoice_no: extracted.confidence_invoice_no,
       confidence_sap_doc: extracted.confidence_sap_doc,
@@ -310,7 +404,8 @@ export function renderBatchQueue() {
   container.innerHTML = '';
   for (const item of state.batch.queue) {
     const row = document.createElement('div');
-    row.style.cssText = 'padding:10px 20px; border-bottom:1px solid var(--border); display:grid; grid-template-columns:24px 1fr auto auto; gap:12px; align-items:center; font-size:12px;';
+    row.style.cssText = '';
+    row.className = 'queue-row';
     const icon = {
       pending: '<span style="color:var(--text-subtle);">○</span>',
       processing: '<span class="spinner" style="width:14px;height:14px;border-width:2px;"></span>',
@@ -319,6 +414,8 @@ export function renderBatchQueue() {
       failed: '<span style="color:var(--err);font-size:16px;">✗</span>',
       duplicate: '<span style="color:var(--accent);font-size:16px;" title="Duplicate">⇈</span>',
     }[item.status] || '?';
+    const stageLabel = item.stage || item.status;
+    const stageCls = `queue-row-stage${stageLabel === 'ocr' ? ' stage-ocr' : ''}${stageLabel === 'completed' || item.status === 'archived' ? ' stage-completed' : ''}${item.status === 'failed' ? ' stage-failed' : ''}`;
     const ext = item.extracted;
     const summary = ext
       ? `<span class="mono" style="color:var(--text-muted);">ΑΦΜ ${ext.afm || '?'} · ${ext.invoice_number || '?'} · ${ext.sap_doc_number || '?'}</span>`
@@ -339,6 +436,7 @@ export function renderBatchQueue() {
         <div style="font-weight:500;">${escapeHtml(item.file.name)}</div>
         <div style="margin-top:2px;font-size:11px;">${summary} ${supplierText ? '· ' + supplierText : ''}</div>
       </div>
+      <span class="${stageCls}">${escapeHtml(stageLabel)}</span>
       <span style="color:var(--text-subtle);font-family:var(--font-mono);font-size:10px;">${(item.file.size / 1024).toFixed(0)}KB</span>
       ${actionBtn}
     `;
@@ -649,6 +747,7 @@ export async function handleFile(originalFile) {
   };
   state.invoices.unshift(invoice);
   audit('upload', 'success', `Received ${originalFile.name} (${(originalFile.size/1024).toFixed(1)}KB)`, { invoice_id: invoice.id });
+  appendTimelineEvent(invoice.id, 'upload', originalFile.name);
 
   // Step 1: Unwrap
   let file, wrapper;
@@ -676,9 +775,11 @@ export async function handleFile(originalFile) {
   state.currentInvoiceId = invoice.id;
   state.currentUpload = { file, wrapper, canvases: [], invoice };
   showReviewPanel(file, invoice, [], wrapper);
+  updateStagePipeline('preview');
   $('#upload-progress').hidden = true;
   $('#review').hidden = false;
   updateProgressInReview('Render → OCR → Extract…');
+  updateStagePipeline('ocr');
 
   try {
     const result = await runOcrPipeline(file, {
@@ -861,6 +962,25 @@ export function populateReviewFromOCR(result, file, invoice) {
         `<span class="mono">${x.afm}</span>${x.valid ? '✓' : '✗'}`
       ).join(' · ')
     : '<em style="color:var(--err)">Δεν βρέθηκαν 9ψήφια στο κείμενο</em>';
+
+  updateStagePipeline('validation', true);
+  appendTimelineEvent(invoice.id, 'ocr', `${result.engine} · ${result.processingMs}ms`);
+  const tl = $('#invoice-timeline');
+  if (tl) tl.innerHTML = renderTimelineHtml(invoice.timeline);
+}
+
+export function updateStagePipeline(activeStage, markDone = false) {
+  const steps = document.querySelectorAll('#stage-pipeline .stage-step');
+  const order = ['upload', 'preview', 'ocr', 'validation', 'save'];
+  const activeIdx = order.indexOf(activeStage);
+  steps.forEach((el) => {
+    const s = el.dataset.stage;
+    const idx = order.indexOf(s);
+    el.classList.remove('is-active', 'is-done');
+    if (idx < activeIdx || (markDone && idx === activeIdx)) el.classList.add('is-done');
+    if (idx === activeIdx && !markDone) el.classList.add('is-active');
+    if (markDone && idx === activeIdx) el.classList.add('is-done');
+  });
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1082,6 +1202,7 @@ export function initUpload() {
       if (state.batch.active) {
         if (confirm('Ακύρωση batch; Τα αρχεία που έχουν ήδη επεξεργαστεί θα παραμείνουν.')) {
           state.batch.cancelled = true;
+          cancelQueue();
           toast('Ακύρωση…', 'warn');
         }
       } else {
@@ -1103,6 +1224,14 @@ export function initUpload() {
   $('#preview-zoom-out')?.addEventListener('click', () => {
     state.previewZoom = Math.max(50, (state.previewZoom || 100) - 25);
     applyPreviewZoom();
+  });
+
+  initUploadEngine({
+    onFiles: (files) => {
+      if (files.length === 1) handleFile(files[0]);
+      else handleBatch(files);
+    },
+    onMergeReady: (merged) => handleFile(merged),
   });
 }
 
@@ -1134,6 +1263,15 @@ async function onArchiveClick() {
     audit('manual_override', 'warning', `User changed: ${overrides.join(', ')}`, {
       invoice_id: invoice.id, actor: 'user', details: { overrides },
     });
+    for (const field of overrides) {
+      recordCorrection({
+        field,
+        original: invoice[field] || invoice[`${field}_id`],
+        corrected: payload[field] || payload.supplier_id,
+        supplierId: payload.supplier_id,
+        afm: payload.afm,
+      });
+    }
   }
   const supplier = state.suppliers.find(s => s.id === payload.supplier_id);
   const filename = buildArchiveFilename(payload.invoice_number, payload.sap_doc_number, payload.invoice_date);
@@ -1179,6 +1317,7 @@ async function onArchiveClick() {
     invoice_id: invoice.id, actor: 'user',
     details: { filename, path: diskPath || archivedPath, on_disk: !!diskPath },
   });
+  appendTimelineEvent(invoice.id, 'archived', filename);
   toast(`Αρχειοθετήθηκε: ${filename}${diskPath ? ' (στον δίσκο)' : ''}`, 'ok');
   window.dispatchEvent(new CustomEvent('review-badge-update'));
   resetUploadView();

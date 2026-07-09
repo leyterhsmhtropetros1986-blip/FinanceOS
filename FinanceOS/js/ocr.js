@@ -4,11 +4,45 @@ import { stripAccents, validateAfmChecksum, similarity, sapPrefixBoost, sapLengt
 import { extractExtendedFields } from './field-extractors.js';
 import { fuzzyFindSupplierInText } from './ocr-confidence.js';
 
-let _tesseractWorker = null;
-let _workerReady = null;
+const MAX_POOL = 4;
+const _pool = [];
+const _available = [];
+const _waiters = [];
 
 // REAL OCR — Tesseract.js (ell+eng) + PDF.js
 // ═══════════════════════════════════════════════════════════
+
+async function createPoolWorker(onProgress) {
+  const worker = await Tesseract.createWorker(['ell', 'eng'], 1, {
+    logger: (m) => {
+      if (m.status === 'recognizing text' && onProgress) {
+        onProgress(`OCR: ${Math.round(m.progress * 100)}%`, m.progress);
+      }
+    },
+  });
+  await configureWorkerForSpeed(worker);
+  return worker;
+}
+
+/** Borrow a worker from the pool (up to 4 parallel OCR jobs) */
+export async function borrowWorker(onProgress) {
+  if (_available.length) return _available.pop();
+  if (_pool.length < MAX_POOL) {
+    const w = await createPoolWorker(onProgress);
+    _pool.push(w);
+    return w;
+  }
+  return new Promise((resolve) => _waiters.push({ resolve, onProgress }));
+}
+
+export function releaseWorker(worker) {
+  if (_waiters.length) {
+    const { resolve } = _waiters.shift();
+    resolve(worker);
+  } else {
+    _available.push(worker);
+  }
+}
 
 async function configureWorkerForSpeed(worker) {
   try {
@@ -22,29 +56,13 @@ async function configureWorkerForSpeed(worker) {
 }
 
 export async function getWorker(onProgress) {
-  if (_tesseractWorker) return _tesseractWorker;
-  if (_workerReady) return _workerReady;
-  onProgress && onProgress('Φόρτωση Tesseract (ell+eng)…', 0);
-  _workerReady = Tesseract.createWorker(['ell', 'eng'], 1, {
-    logger: (m) => {
-      if (m.status === 'recognizing text' && onProgress) {
-        onProgress(`OCR σελίδας: ${Math.round(m.progress * 100)}%`, m.progress);
-      } else if (m.status && onProgress) {
-        onProgress(m.status, m.progress || 0);
-      }
-    },
-  }).then(async (worker) => {
-    await configureWorkerForSpeed(worker);
-    _tesseractWorker = worker;
-    return worker;
-  });
-  return _workerReady;
+  return borrowWorker(onProgress);
 }
 
 /** Preload Tesseract during idle time so first invoice is fast */
 export function warmupOcrWorker() {
-  if (_tesseractWorker || _workerReady) return;
-  const run = () => getWorker().catch(() => {});
+  if (_pool.length) return;
+  const run = () => borrowWorker().then((w) => releaseWorker(w)).catch(() => {});
   if (typeof requestIdleCallback === 'function') {
     requestIdleCallback(run, { timeout: 4000 });
   } else {
