@@ -1,7 +1,7 @@
 /** Enterprise Document Management — Archive browser */
 import { state } from './state.js';
 import { $, toast, escapeHtml, debounce, fmtDate } from './utils.js';
-import { verifyPermission } from './storage.js';
+import { verifyPermission, getFileHandleFromRelPath } from './storage.js';
 import { getArchivedPdfBytes } from './invoices.js';
 
 const LS_VIEW = 'financeos-archive-view';
@@ -58,18 +58,23 @@ function parseFilenameMeta(filename) {
   };
 }
 
+function normalizeArchivedPath(path) {
+  if (!path) return null;
+  let rel = String(path);
+  if (state.archiveRoot?.name && rel.startsWith(state.archiveRoot.name + '/')) {
+    rel = rel.slice(state.archiveRoot.name.length + 1);
+  }
+  return rel;
+}
+
 /** Build unified document index from disk scan + invoice records */
 export function buildArchiveIndex(cache) {
   const invoiceByPath = new Map();
   const invoiceByFilename = new Map();
   for (const inv of state.invoices) {
     if (inv.archived_filename) invoiceByFilename.set(inv.archived_filename, inv);
-    if (inv.archived_path) {
-      const parts = inv.archived_path.split('/');
-      const fname = parts[parts.length - 1];
-      const folder = parts.length > 1 ? parts[parts.length - 2] : '';
-      invoiceByPath.set(`${folder}/${fname}`, inv);
-    }
+    const rel = normalizeArchivedPath(inv.archived_path);
+    if (rel) invoiceByPath.set(rel, inv);
   }
 
   const docs = [];
@@ -418,8 +423,7 @@ function loadLazyThumbnails(container, docs) {
 }
 
 async function renderDocThumbnail(doc, thumbEl) {
-  const dir = await state.archiveRoot.handle.getDirectoryHandle(doc.folder);
-  const fh = await dir.getFileHandle(doc.filename);
+  const fh = await getFileHandleFromRelPath(`${doc.folder}/${doc.filename}`);
   const file = await fh.getFile();
   if (!file.type.includes('pdf') && !doc.filename.endsWith('.pdf')) return;
   const buf = await file.arrayBuffer();
@@ -449,12 +453,11 @@ async function downloadDoc(doc) {
     }
   }
   try {
-    const dir = await state.archiveRoot.handle.getDirectoryHandle(doc.folder);
-    const fh = await dir.getFileHandle(doc.filename);
+    const fh = await getFileHandleFromRelPath(`${doc.folder}/${doc.filename}`);
     const file = await fh.getFile();
     const a = document.createElement('a');
     a.href = URL.createObjectURL(file);
-    a.download = doc.filename;
+    a.download = doc.filename.split('/').pop() || doc.filename;
     a.click();
   } catch (e) {
     toast(`Download failed: ${e.message}`, 'err');
@@ -521,8 +524,7 @@ export function renderArchiveBrowser() {
 
 export async function openArchivedFileFromDisk(folderName, filename, docForPreview = null) {
   try {
-    const dir = await state.archiveRoot.handle.getDirectoryHandle(folderName);
-    const fh = await dir.getFileHandle(filename);
+    const fh = await getFileHandleFromRelPath(`${folderName}/${filename}`);
     const file = await fh.getFile();
     const url = URL.createObjectURL(file);
     if (docForPreview) {

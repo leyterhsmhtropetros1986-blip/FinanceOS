@@ -2,6 +2,7 @@
 import { state } from './state.js';
 import { $, toast, fmtDate, escapeHtml } from './utils.js';
 import { audit } from './audit.js';
+import { getFileHandleFromRelPath } from './storage.js';
 import { exportArchivedToExcel } from './export.js';
 import { updateReviewBadge } from './badges.js';
 
@@ -17,20 +18,8 @@ export async function getArchivedPdfBytes(invoice) {
   // 2. Fallback: διάβασε από το δίσκο μέσω File System Access API
   if (!state.archiveRoot.handle) return null;
   try {
-    // archived_path είναι "folder/filename" ή "root/folder/filename"
-    let relPath = invoice.archived_path;
-    // Αν αρχίζει με το root name, αφαίρεσέ το
-    if (relPath.startsWith(state.archiveRoot.name + '/')) {
-      relPath = relPath.slice(state.archiveRoot.name.length + 1);
-    }
-    const parts = relPath.split('/');
-    const filename = parts.pop();
-    let currentDir = state.archiveRoot.handle;
-    for (const p of parts) {
-      currentDir = await currentDir.getDirectoryHandle(p, { create: false });
-    }
-    const fileHandle = await currentDir.getFileHandle(filename, { create: false });
-    const file = await fileHandle.getFile();
+    const fh = await getFileHandleFromRelPath(invoice.archived_path);
+    const file = await fh.getFile();
     return await file.arrayBuffer();
   } catch (e) {
     console.warn('Disk read failed:', e);

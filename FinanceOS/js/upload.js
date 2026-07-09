@@ -5,7 +5,7 @@ import { validateAfmChecksum } from './helpers.js';
 import { audit } from './audit.js';
 import {
   verifyPermission, writeToDisk, resolveSupplierFolder, findDuplicateInvoice,
-  storeArchivedFile, splitPdfByPages, downloadArchiveZip,
+  storeArchivedFile, splitPdfByPages, downloadArchiveZip, buildArchiveRelPath,
 } from './storage.js';
 import { runClaudeVisionOCRDirect } from './ai.js';
 import { runOcrPipeline } from './ocr-pipeline.js';
@@ -218,7 +218,7 @@ export async function processBatchItem(item, useAI) {
           best.sap_vendor_code,
           best.folder_path
         );
-        const archivedPath = `${actualFolder}/${filename}`;
+        const archivedPath = buildArchiveRelPath(actualFolder, filename, extracted.invoice_date);
 
         // Split PDF αν είναι multi-invoice, αλλιώς κράτα ολόκληρο
         let outputBytes;
@@ -233,7 +233,7 @@ export async function processBatchItem(item, useAI) {
         }
 
         // Store για ZIP download αργότερα (χρησιμοποίησε το ίδιο folder name)
-        storeArchivedFile(actualFolder, filename, outputBytes);
+        storeArchivedFile(actualFolder, filename, outputBytes, extracted.invoice_date);
 
         // Γράψε στον πραγματικό δίσκο αν είναι configured
         let diskPath = null;
@@ -1180,12 +1180,12 @@ async function onArchiveClick() {
     return;
   }
   const actualFolder = await resolveSupplierFolder(supplier.sap_vendor_code, supplier.folder_path);
-  const archivedPath = `${actualFolder}/${filename}`;
+  const archivedPath = buildArchiveRelPath(actualFolder, filename, payload.invoice_date);
   let outputBytes = null;
   if (state.currentUpload?.file) {
     try {
       outputBytes = await state.currentUpload.file.arrayBuffer();
-      storeArchivedFile(actualFolder, filename, outputBytes);
+      storeArchivedFile(actualFolder, filename, outputBytes, payload.invoice_date);
     } catch (e) { console.warn('Could not store archived file bytes:', e); }
   }
   let diskPath = null;

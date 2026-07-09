@@ -364,6 +364,31 @@ export function updateArchiveRootDisplay() {
   }
 }
 
+/** Relative path inside archive root: Supplier/YYYY/MM/filename.pdf */
+export function buildArchiveRelPath(supplierFolder, filename, dateISO = null) {
+  const dt = dateISO ? new Date(dateISO) : new Date();
+  const year = String(dt.getFullYear());
+  const month = String(dt.getMonth() + 1).padStart(2, '0');
+  return `${supplierFolder}/${year}/${month}/${filename}`;
+}
+
+/** Walk nested folders from archive root to a file handle */
+export async function getFileHandleFromRelPath(relPath) {
+  if (!state.archiveRoot.handle) throw new Error('Δεν έχει επιλεγεί ριζικός φάκελος');
+  let rel = String(relPath || '');
+  if (rel.startsWith(state.archiveRoot.name + '/')) {
+    rel = rel.slice(state.archiveRoot.name.length + 1);
+  }
+  const parts = rel.split('/').filter(Boolean);
+  if (!parts.length) throw new Error('Κενό path');
+  const filename = parts.pop();
+  let dir = state.archiveRoot.handle;
+  for (const p of parts) {
+    dir = await dir.getDirectoryHandle(p, { create: false });
+  }
+  return dir.getFileHandle(filename, { create: false });
+}
+
 export async function writeToDisk(supplierFolder, filename, bytes, dateISO = null) {
   if (!state.archiveRoot.handle) throw new Error('Δεν έχει επιλεγεί ριζικός φάκελος');
   const ok = await verifyPermission(state.archiveRoot.handle, 'readwrite');
@@ -437,9 +462,9 @@ export async function splitPdfByPages(pdfBytes, pageStart, pageEnd) {
 
 state.archivedFiles = new Map();  // filename → {bytes, folderPath}
 
-export function storeArchivedFile(folderPath, filename, bytes) {
-  const key = `${folderPath}/${filename}`;
-  state.archivedFiles.set(key, { folderPath, filename, bytes });
+export function storeArchivedFile(folderPath, filename, bytes, dateISO = null) {
+  const key = buildArchiveRelPath(folderPath, filename, dateISO);
+  state.archivedFiles.set(key, { folderPath, filename, bytes, relPath: key });
 }
 
 export async function downloadArchiveZip() {
