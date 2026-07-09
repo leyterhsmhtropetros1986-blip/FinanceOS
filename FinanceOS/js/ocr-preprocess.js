@@ -166,11 +166,103 @@ export function preprocessForOcr(source) {
   return binarizeCanvas(deskewed);
 }
 
-/** Variants for multi-pass OCR */
-export function getOcrVariants(canvas) {
+/** Variants for multi-pass OCR — 5 passes per page */
+export function sharpenCanvas(source) {
+  const canvas = document.createElement('canvas');
+  canvas.width = source.width;
+  canvas.height = source.height;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(source, 0, 0);
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = img.data;
+  const w = canvas.width;
+  const kernel = [0, -1, 0, -1, 5, -1, 0, -1, 0];
+  const out = new Uint8ClampedArray(d);
+  for (let y = 1; y < canvas.height - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      for (let c = 0; c < 3; c++) {
+        let sum = 0;
+        let ki = 0;
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const i = ((y + dy) * w + (x + dx)) * 4 + c;
+            sum += d[i] * kernel[ki++];
+          }
+        }
+        const oi = (y * w + x) * 4 + c;
+        out[oi] = Math.max(0, Math.min(255, sum));
+      }
+    }
+  }
+  for (let i = 0; i < d.length; i++) d[i] = out[i];
+  ctx.putImageData(img, 0, 0);
+  return canvas;
+}
+
+/** Crop excessive white borders */
+export function removeBorderCanvas(source, threshold = 248) {
+  const ctx = source.getContext('2d');
+  const { width, height } = source;
+  const data = ctx.getImageData(0, 0, width, height).data;
+  const isInk = (x, y) => {
+    const i = (y * width + x) * 4;
+    return data[i] < threshold || data[i + 1] < threshold || data[i + 2] < threshold;
+  };
+  let top = 0; let bottom = height - 1; let left = 0; let right = width - 1;
+  while (top < height && ![...Array(width).keys()].some((x) => isInk(x, top))) top++;
+  while (bottom > top && ![...Array(width).keys()].some((x) => isInk(x, bottom))) bottom--;
+  while (left < width && ![...Array(bottom - top + 1).keys()].some((dy) => isInk(left, top + dy))) left++;
+  while (right > left && ![...Array(bottom - top + 1).keys()].some((dy) => isInk(right, top + dy))) right--;
+  if (right - left < 50 || bottom - top < 50) return source;
+  const canvas = document.createElement('canvas');
+  canvas.width = right - left + 1;
+  canvas.height = bottom - top + 1;
+  canvas.getContext('2d').drawImage(source, left, top, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
+/** Pick best orientation 0/90/180/270 via projection score */
+export function autoOrientCanvas(source) {
+  const angles = [0, 90, 180, 270];
+  let best = source;
+  let bestScore = -1;
+  for (const deg of angles) {
+    const c = deg === 0 ? source : rotateCanvas(source, deg);
+    const score = estimateSkewAngle(c, 0) + c.width * 0.001;
+    const ctx = c.getContext('2d');
+    const { width, height } = c;
+    const data = ctx.getImageData(0, 0, width, height).data;
+    let ink = 0;
+    for (let i = 0; i < data.length; i += 16) ink += 255 - data[i];
+    const total = ink + score;
+    if (total > bestScore) { bestScore = total; best = c; }
+  }
+  return removeBorderCanvas(best);
+}
+
+/** Crop top portion for header / SAP handwritten zone */
+export function cropHeaderRegion(source, ratio = 0.35) {
+  const canvas = document.createElement('canvas');
+  canvas.width = source.width;
+  canvas.height = Math.max(1, Math.round(source.height * ratio));
+  canvas.getContext('2d').drawImage(source, 0, 0, source.width, canvas.height, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
+export function getOcrPassVariants(canvas) {
+  const enhanced = enhanceCanvas(canvas);
+  const preprocessed = preprocessForOcr(canvas);
+  const sharp = sharpenCanvas(enhanced);
   return [
-    { label: 'original', canvas },
-    { label: 'enhanced', canvas: enhanceCanvas(canvas) },
-    { label: 'preprocessed', canvas: preprocessForOcr(canvas) },
+    { label: 'normal', canvas },
+    { label: 'high_contrast', canvas: enhanced },
+    { label: 'preprocessed', canvas: preprocessed },
+    { label: 'numbers_only', canvas: preprocessed, params: { whitelist: '0123456789', psm: '6' } },
+    { label: 'header', canvas: cropHeaderRegion(sharp), params: { psm: '6' } },
   ];
+}
+
+/** @deprecated use getOcrPassVariants */
+export function getOcrVariants(canvas) {
+  return getOcrPassVariants(canvas).slice(0, 3);
 }

@@ -364,26 +364,29 @@ export function updateArchiveRootDisplay() {
   }
 }
 
-export async function writeToDisk(supplierFolder, filename, bytes) {
+export async function writeToDisk(supplierFolder, filename, bytes, dateISO = null) {
   if (!state.archiveRoot.handle) throw new Error('Δεν έχει επιλεγεί ριζικός φάκελος');
   const ok = await verifyPermission(state.archiveRoot.handle, 'readwrite');
   if (!ok) throw new Error('Δεν υπάρχει άδεια γραφής');
 
-  // Δημιούργησε τον υπο-φάκελο προμηθευτή αν δεν υπάρχει
   const supplierDir = await state.archiveRoot.handle.getDirectoryHandle(supplierFolder, { create: true });
+  const dt = dateISO ? new Date(dateISO) : new Date();
+  const year = String(dt.getFullYear());
+  const month = String(dt.getMonth() + 1).padStart(2, '0');
+  const yearDir = await supplierDir.getDirectoryHandle(year, { create: true });
+  const monthDir = await yearDir.getDirectoryHandle(month, { create: true });
 
-  // Αν υπάρχει ήδη αρχείο με ίδιο όνομα → DUPLICATE, μην το αντικαθιστάς
-  if (await fileExists(supplierDir, filename)) {
+  if (await fileExists(monthDir, filename)) {
     const err = new Error(`Duplicate: ${filename} υπάρχει ήδη στον δίσκο`);
     err.code = 'DUPLICATE';
     throw err;
   }
 
-  const fileHandle = await supplierDir.getFileHandle(filename, { create: true });
+  const fileHandle = await monthDir.getFileHandle(filename, { create: true });
   const writable = await fileHandle.createWritable();
   await writable.write(bytes);
   await writable.close();
-  return { finalName: filename, fullPath: `${state.archiveRoot.name}/${supplierFolder}/${filename}` };
+  return { finalName: filename, fullPath: `${state.archiveRoot.name}/${supplierFolder}/${year}/${month}/${filename}` };
 }
 
 export async function fileExists(dirHandle, filename) {

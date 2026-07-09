@@ -10,7 +10,9 @@ const CURRENCY_RE = /\b(EUR|USD|GBP|CHF|€|\$|£)\b/i;
 const PO_KEYWORDS = ['PO', 'P.O.', 'PURCHASE ORDER', 'ΕΝΤΟΛΗ ΑΓΟΡΑΣ', 'ΠΑΡΑΓΓΕΛΙΑ'];
 const REF_KEYWORDS = ['REFERENCE', 'REF', 'ΑΝΑΦΟΡΑ', 'YOUR REF'];
 const CONTAINER_KEYWORDS = ['CONTAINER', 'CNTR', 'ΕΜΚ'];
-const BL_KEYWORDS = ['B/L', 'BILL OF LADING', 'BL NO', 'ΦΟΡΤΩΤΙΚΗ'];
+const BL_KEYWORDS = ['B/L', 'BILL OF LADING', 'BL NO', 'ΦΟΡΤΩΤΙΚΗ', 'BOL'];
+const BOOKING_KEYWORDS = ['BOOKING', 'BOOKING NO', 'BOOKING NUMBER', 'ΚΡΑΤΗΣΗ'];
+const SHIPMENT_KEYWORDS = ['SHIPMENT', 'SHIPMENT NO', 'SHPMT', 'ΑΠΟΣΤΟΛΗ'];
 
 function parseAmount(raw) {
   if (raw == null) return null;
@@ -105,7 +107,17 @@ export function extractContainer(fullText) {
 }
 
 export function extractBillOfLading(fullText) {
-  return findLabeledValue(fullText, BL_KEYWORDS, /([A-Z0-9][A-Z0-9\-/]{5,20})/i);
+  const iso = fullText.match(/\b([A-Z]{4}\d{7,12})\b/);
+  if (iso) return { value: iso[1], confidence: 88 };
+  return findLabeledValue(fullText, BL_KEYWORDS, /([A-Z0-9][A-Z0-9\-/]{5,24})/i);
+}
+
+export function extractBookingNumber(fullText) {
+  return findLabeledValue(fullText, BOOKING_KEYWORDS, /([A-Z0-9][A-Z0-9\-/]{5,20})/i);
+}
+
+export function extractShipmentNumber(fullText) {
+  return findLabeledValue(fullText, SHIPMENT_KEYWORDS, /([A-Z0-9][A-Z0-9\-/]{5,20})/i);
 }
 
 export function extractExtendedFields(pages, fullText) {
@@ -115,6 +127,8 @@ export function extractExtendedFields(pages, fullText) {
   const ref = extractReference(fullText);
   const container = extractContainer(fullText);
   const bl = extractBillOfLading(fullText);
+  const booking = extractBookingNumber(fullText);
+  const shipment = extractShipmentNumber(fullText);
   return {
     ...amounts,
     currency: currency.value,
@@ -127,6 +141,10 @@ export function extractExtendedFields(pages, fullText) {
     confidence_container: container.confidence,
     bill_of_lading: bl.value,
     confidence_bl: bl.confidence,
+    booking_number: booking.value,
+    confidence_booking: booking.confidence,
+    shipment_number: shipment.value,
+    confidence_shipment: shipment.confidence,
   };
 }
 

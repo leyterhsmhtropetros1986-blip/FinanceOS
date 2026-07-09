@@ -18,6 +18,25 @@ state.archiveUi = {
   selected: new Set(),
 };
 
+async function collectFilesRecursive(dirHandle, prefix) {
+  const files = [];
+  for await (const [fname, fhandle] of dirHandle.entries()) {
+    if (fname.startsWith('.')) continue;
+    const relPath = prefix ? `${prefix}/${fname}` : fname;
+    if (fhandle.kind === 'file') {
+      try {
+        const file = await fhandle.getFile();
+        files.push({ name: fname, relPath, size: file.size, modified: file.lastModified });
+      } catch {
+        files.push({ name: fname, relPath, size: 0, modified: 0 });
+      }
+    } else if (fhandle.kind === 'directory') {
+      files.push(...await collectFilesRecursive(fhandle, relPath));
+    }
+  }
+  return files;
+}
+
 function loadJson(key, fallback) {
   try { return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback)); }
   catch { return fallback; }
@@ -56,7 +75,7 @@ export function buildArchiveIndex(cache) {
   const docs = [];
   for (const folder of cache.folders) {
     for (const file of folder.files) {
-      const key = `${folder.name}/${file.name}`;
+      const key = `${folder.name}/${file.relPath || file.name}`;
       const inv = invoiceByPath.get(key) || invoiceByFilename.get(file.name);
       const parsed = parseFilenameMeta(file.name);
       const avgConf = inv ? Math.round(
@@ -66,7 +85,7 @@ export function buildArchiveIndex(cache) {
       docs.push({
         id: key,
         folder: folder.name,
-        filename: file.name,
+        filename: file.relPath || file.name,
         size: file.size,
         modified: file.modified,
         invoiceId: inv?.id || null,
@@ -467,18 +486,8 @@ export async function loadArchiveBrowser(force = false) {
     const folders = [];
     for await (const [name, handle] of state.archiveRoot.handle.entries()) {
       if (handle.kind !== 'directory' || name.startsWith('.')) continue;
-      const files = [];
-      for await (const [fname, fhandle] of handle.entries()) {
-        if (fhandle.kind === 'file' && !fname.startsWith('.')) {
-          try {
-            const file = await fhandle.getFile();
-            files.push({ name: fname, size: file.size, modified: file.lastModified });
-          } catch {
-            files.push({ name: fname, size: 0, modified: 0 });
-          }
-        }
-      }
-      files.sort((a, b) => a.name.localeCompare(b.name));
+      const files = await collectFilesRecursive(handle, '');
+      files.sort((a, b) => a.relPath.localeCompare(b.relPath));
       folders.push({ name, files });
     }
     folders.sort((a, b) => a.name.localeCompare(b.name));

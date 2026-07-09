@@ -51,9 +51,11 @@ export function similarity(a, b) {
 
 // ═══════════════════════════════════════════════════════════
 
-// SAP DOC NUMBER SCORING — known prefixes get a boost, but ANY 6–12 digit number can match
+// SAP DOC NUMBER SCORING — prefix boost only, NEVER reject unknown prefixes
 // ═══════════════════════════════════════════════════════════
-export const SAP_PREFIXES = ['1900', '1700', '510', '60', '20', '40', '30', '80', '90'];
+const _SAP_4DIGIT = ['1700', '1800', '1900', '2000', '2100', '2200', '2300', '2400', '2500'];
+const _SAP_2DIGIT = Array.from({ length: 50 }, (_, i) => String(20 + i)); // 20–69
+export const SAP_PREFIXES = [..._SAP_4DIGIT, ..._SAP_2DIGIT, '510', '500'];
 
 export function isValidSapDocNumber(num) {
   const clean = String(num || '').replace(/\D/g, '');
@@ -63,10 +65,10 @@ export function isValidSapDocNumber(num) {
 export function sapPrefixBoost(number) {
   const n = String(number || '').replace(/\D/g, '');
   if (!isValidSapDocNumber(n)) return 0;
-  for (const p of SAP_PREFIXES) {
+  const sorted = [...SAP_PREFIXES].sort((a, b) => b.length - a.length);
+  for (const p of sorted) {
     if (n.startsWith(p)) return 25 + (p.length * 2);
   }
-  // Unknown prefix — still valid SAP format, modest boost
   if (n.length >= 8 && n.length <= 12) return 12;
   if (n.length >= 6) return 8;
   return 0;
@@ -74,7 +76,8 @@ export function sapPrefixBoost(number) {
 
 export function sapPrefixLabel(number) {
   const n = String(number || '').replace(/\D/g, '');
-  for (const p of SAP_PREFIXES) {
+  const sorted = [...SAP_PREFIXES].sort((a, b) => b.length - a.length);
+  for (const p of sorted) {
     if (n.startsWith(p)) return p;
   }
   return n.length >= 2 ? n.slice(0, 2) + '…' : 'other';

@@ -1,9 +1,8 @@
 /** Tesseract OCR & field extraction */
 import { state } from './state.js';
 import { stripAccents, validateAfmChecksum, similarity, sapPrefixBoost, sapLengthBoost, sapPrefixLabel, isValidSapDocNumber, normalizeForMatch } from './helpers.js';
-import { getOcrVariants } from './ocr-preprocess.js';
-import { extractPdfText } from './pdf-text.js';
-import { extractExtendedFields, mergeExtractionResults, mergeOcrPages } from './field-extractors.js';
+import { extractExtendedFields } from './field-extractors.js';
+import { fuzzyFindSupplierInText } from './ocr-confidence.js';
 
 let _tesseractWorker = null;
 
@@ -62,89 +61,8 @@ export async function loadImageToCanvas(file) {
 }
 
 export async function runRealOCR(file, onProgress, existingCanvases = null) {
-  const t0 = performance.now();
-  const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-  const canvases = existingCanvases || await renderToCanvases(file, onProgress);
-
-  // Strategy 1: PDF embedded text (high accuracy for digital PDFs)
-  let pdfTextData = null;
-  if (isPdf) {
-    try {
-      pdfTextData = await extractPdfText(file, onProgress);
-    } catch (e) {
-      console.warn('PDF text extraction failed:', e);
-    }
-  }
-
-  // Strategy 2: Tesseract OCR with preprocessing + multi-pass
-  const worker = await getWorker(onProgress);
-  const allPageSets = [];
-  for (let i = 0; i < canvases.length; i++) {
-    onProgress && onProgress(`OCR σελ ${i + 1}/${canvases.length}…`, i / canvases.length);
-    const variants = getOcrVariants(canvases[i]);
-    const passPages = [];
-    for (const variant of variants) {
-      try {
-        const { data } = await worker.recognize(variant.canvas);
-        passPages.push({
-          page_number: i + 1,
-          text: data.text || '',
-          words: (data.words || []).map(w => ({
-            text: w.text,
-            confidence: Math.round(w.confidence || 0),
-            x: w.bbox ? w.bbox.x0 : 0,
-            y: w.bbox ? w.bbox.y0 : 0,
-            w: w.bbox ? (w.bbox.x1 - w.bbox.x0) : 0,
-            h: w.bbox ? (w.bbox.y1 - w.bbox.y0) : 0,
-          })),
-          width: variant.canvas.width,
-          height: variant.canvas.height,
-          mean_confidence: Math.round(data.confidence || 0),
-          pass: variant.label,
-        });
-      } catch (e) {
-        console.warn(`OCR pass ${variant.label} failed:`, e);
-      }
-    }
-    if (passPages.length) allPageSets.push(mergeOcrPages([passPages]));
-  }
-  const pages = mergeOcrPages(allPageSets);
-  const processingMs = Math.round(performance.now() - t0);
-  const fullText = pages.map(p => p.text).join('\n');
-  const meanOcrConf = pages.length
-    ? Math.round(pages.reduce((s, p) => s + (p.mean_confidence || 0), 0) / pages.length)
-    : 0;
-
-  const ocrExtracted = extractAllFields(pages, fullText);
-  ocrExtracted._meanOcrConfidence = meanOcrConf;
-
-  let pdfExtracted = null;
-  if (pdfTextData?.fullText) {
-    pdfExtracted = extractAllFields(pdfTextData.pages, pdfTextData.fullText);
-    pdfExtracted._meanOcrConfidence = 95;
-  }
-
-  // Merge: prefer PDF text when OCR confidence is low
-  let extracted;
-  if (pdfExtracted && meanOcrConf < 65) {
-    extracted = mergeExtractionResults(pdfExtracted, ocrExtracted);
-  } else {
-    extracted = mergeExtractionResults(ocrExtracted, pdfExtracted);
-  }
-
-  return {
-    filename: file.name,
-    fileSize: file.size,
-    pageCount: pages.length,
-    processingMs,
-    engine: pdfTextData ? 'tesseract.js + pdf text layer' : 'tesseract.js (browser)',
-    fullText,
-    pdfText: pdfTextData?.fullText || null,
-    extracted,
-    canvases,
-    supplierHint: extracted.supplier_name_hint,
-    ocrConfidence: meanOcrConf,
-  };
+  const { runOcrPipeline } = await import('./ocr-pipeline.js');
+  return runOcrPipeline(file, { onProgress, existingCanvases });
 }
 
 /**
@@ -165,7 +83,11 @@ export async function renderToCanvases(file, onProgress) {
 // FIELD EXTRACTORS — τρέχουν σε πραγματικό OCR text
 // ═══════════════════════════════════════════════════════════
 const AFM_KEYWORDS = ['ΑΦΜ', 'Α.Φ.Μ', 'AFM', 'VAT', 'TAX ID', 'TIN'];
-const INVOICE_KEYWORDS = ['ΑΡΙΘΜΟΣ ΤΙΜΟΛΟΓΙΟΥ', 'ΑΡ. ΤΙΜΟΛΟΓΙΟΥ', 'ΤΙΜΟΛΟΓΙΟ', 'INVOICE NO', 'INVOICE #', 'INVOICE NUMBER', 'ΠΑΡΑΣΤΑΤΙΚΟ', 'Τ.Δ.Α', 'Δ.Α.Τ'];
+const INVOICE_KEYWORDS = [
+  'ΑΡΙΘΜΟΣ ΤΙΜΟΛΟΓΙΟΥ', 'ΑΡ. ΤΙΜΟΛΟΓΙΟΥ', 'ΤΙΜΟΛΟΓΙΟ', 'INVOICE NO', 'INVOICE #', 'INVOICE NUMBER',
+  'ΠΑΡΑΣΤΑΤΙΚΟ', 'Τ.Δ.Α', 'Δ.Α.Τ', 'INV NO', 'INVOICE', 'DEBIT NOTE', 'CREDIT NOTE',
+  'ΤΙΜΟΛΟΓΙΟ ΑΞΙΑΣ', 'ΑΡΙΘΜΟΣ', 'NO.', 'NUMBER',
+];
 const DATE_KEYWORDS = ['ΗΜΕΡΟΜΗΝΙΑ', 'ΗΜ/ΝΙΑ', 'DATE', 'ΕΚΔΟΣΗ'];
 const SAP_KEYWORDS = [
   'SAP DOC', 'SAP DOCUMENT', 'SAP', 'DOC NO', 'DOC NUMBER', 'DOCUMENT NUMBER',
@@ -242,7 +164,27 @@ export function extractAfm(fullText) {
 
 export function extractInvoiceNumber(fullText) {
   const upper = stripAccents(fullText.toUpperCase());
-  let best = null, bestConf = 0;
+  let best = null; let bestConf = 0;
+
+  // Shipping invoice patterns (COSCO, DHL, MAERSK, etc.)
+  const shippingPatterns = [
+    /\b(INV[\s\-]?[A-Z0-9]{4,12})\b/i,
+    /\b(TPY[\s\-]?S?\d?[\s\-]?[A-Z0-9/\-]{3,20})\b/i,
+    /\b(FT[/\-][0-9]{4}[/\-][0-9]{3,6})\b/i,
+    /\b([A-Z]{2,4}[/\-][0-9]{4,10})\b/,
+    /\b(INVOICE\s*[#:]?\s*([A-Z0-9][A-Z0-9/\-.]{3,20}))\b/i,
+  ];
+  for (const pat of shippingPatterns) {
+    const m = fullText.match(pat);
+    if (m) {
+      const candidate = (m[1] || m[0]).trim();
+      if (candidate.length >= 4 && /\d/.test(candidate)) {
+        const conf = 90;
+        if (conf > bestConf) { best = candidate; bestConf = conf; }
+      }
+    }
+  }
+
   for (const kw of INVOICE_KEYWORDS) {
     let idx = 0;
     while ((idx = upper.indexOf(kw, idx)) !== -1) {
@@ -448,7 +390,7 @@ export function extractAllFields(pages, fullText) {
 // ═══════════════════════════════════════════════════════════
 // SUPPLIER MATCHING
 // ═══════════════════════════════════════════════════════════
-export function matchSupplier(extractedAfm, supplierNameHint) {
+export function matchSupplier(extractedAfm, supplierNameHint, fullText = '') {
   const candidates = new Map();
 
   const rawInput = String(extractedAfm || '').trim().toUpperCase().replace(/[\s\-]/g, '');
@@ -522,6 +464,18 @@ export function matchSupplier(extractedAfm, supplierNameHint) {
         } else {
           candidates.set(s.id, buildCandidate(s, score, 'fuzzy_name'));
         }
+      }
+    }
+  }
+
+  // Step 5: Full-text scan when no strong match yet
+  if (fullText && candidates.size === 0) {
+    const hit = fuzzyFindSupplierInText(fullText, state.suppliers);
+    if (hit) {
+      const c = buildCandidate(hit.supplier, hit.score, hit.method || 'text_scan');
+      const existing = candidates.get(hit.supplier.id);
+      if (!existing || c.confidence > existing.confidence) {
+        candidates.set(hit.supplier.id, c);
       }
     }
   }

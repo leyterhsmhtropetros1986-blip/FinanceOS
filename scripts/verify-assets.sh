@@ -45,7 +45,8 @@ js/search.js
 css/archive.css
 js/ocr-preprocess.js
 js/pdf-text.js
-js/field-extractors.js
+  js/ocr-pipeline.js
+  js/ocr-confidence.js
 LIST
 )
 
