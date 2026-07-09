@@ -83,7 +83,7 @@ ${ownAfmLine}
 Αν ΔΕΝ ΜΠΟΡΕΙΣ να διαβάσεις το τιμολόγιο (πολύ κακή ποιότητα, όχι invoice), επίστρεψε {"invoices": []} — ΠΑΝΤΑ έγκυρο JSON.`;
 }
 
-async export function runClaudeVisionOCR(canvases, onProgress) {
+export async function runClaudeVisionOCR(canvases, onProgress) {
   const s = state.settings;
   if (!s.apiKey) throw new Error('Δεν έχει οριστεί API key. Πήγαινε στις Ρυθμίσεις AI.');
 
@@ -105,7 +105,7 @@ async export function runClaudeVisionOCR(canvases, onProgress) {
  * Το Claude API υποστηρίζει PDF documents native (up to 32MB, 100 pages).
  * Αυτό αποφεύγει το bottleneck του browser PDF rendering.
  */
-async export function runClaudeVisionOCRDirect(file, onProgress) {
+export async function runClaudeVisionOCRDirect(file, onProgress) {
   const s = state.settings;
   if (!s.apiKey) throw new Error('Δεν έχει οριστεί API key. Πήγαινε στις Ρυθμίσεις AI.');
 
@@ -133,7 +133,7 @@ async export function runClaudeVisionOCRDirect(file, onProgress) {
   return await callClaudeAPI(content, null, onProgress);
 }
 
-async export function callClaudeAPI(contentBlock, canvases, onProgress) {
+export async function callClaudeAPI(contentBlock, canvases, onProgress) {
   const s = state.settings;
   onProgress?.('Αποστολή σε Claude Vision…', 0.3);
 

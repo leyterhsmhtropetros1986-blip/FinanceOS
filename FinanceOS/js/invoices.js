@@ -9,7 +9,7 @@ import { updateReviewBadge } from './badges.js';
 // ═══════════════════════════════════════════════════════════
 
 // ─── View/Download αρχειοθετημένων PDF ──────────────────
-async export function getArchivedPdfBytes(invoice) {
+export async function getArchivedPdfBytes(invoice) {
   if (!invoice || !invoice.archived_path) return null;
   // 1. In-memory cache
   const stored = state.archivedFiles.get(invoice.archived_path);
@@ -38,7 +38,7 @@ async export function getArchivedPdfBytes(invoice) {
   }
 }
 
-async export function viewArchivedPdf(invoiceId) {
+export async function viewArchivedPdf(invoiceId) {
   const invoice = state.invoices.find(i => i.id === invoiceId);
   if (!invoice || !invoice.archived_path) {
     toast('Το τιμολόγιο δεν είναι αρχειοθετημένο', 'err');
@@ -59,7 +59,7 @@ async export function viewArchivedPdf(invoiceId) {
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
-async export function downloadArchivedPdf(invoiceId) {
+export async function downloadArchivedPdf(invoiceId) {
   const invoice = state.invoices.find(i => i.id === invoiceId);
   if (!invoice || !invoice.archived_path) {
     toast('Το τιμολόγιο δεν είναι αρχειοθετημένο', 'err');

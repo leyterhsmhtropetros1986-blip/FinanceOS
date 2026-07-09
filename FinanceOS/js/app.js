@@ -31,16 +31,6 @@ export function initNavigation() {
   
   
   
-    const count = state.invoices.filter(i => i.status === 'needs_review').length;
-    const badge = $('#badge-review');
-    if (count > 0) {
-      badge.hidden = false;
-      badge.textContent = count;
-    } else {
-      badge.hidden = true;
-    }
-  }
-  
   // ═══════════════════════════════════════════════════════════
 }
 
@@ -53,14 +43,6 @@ window.addEventListener('unhandledrejection', (e) => {
 
 // BOOT
 // ═══════════════════════════════════════════════════════════
-
-// Global error handlers
-window.addEventListener('error', (e) => {
-  console.error('Global error:', e.message, e.filename, e.lineno, e.error);
-});
-window.addEventListener('unhandledrejection', (e) => {
-  console.error('Unhandled rejection:', e.reason);
-});
 
 function checkEnvironment() {
   const isIframe = window !== window.top;
@@ -144,6 +126,10 @@ async function boot() {
   // No noisy toasts on boot — silent if everything is fine
 }
 
-  window.addEventListener('review-badge-update', updateReviewBadge);
+window.addEventListener('review-badge-update', updateReviewBadge);
 
-boot();
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => boot());
+} else {
+  boot();
+}

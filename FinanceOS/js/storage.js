@@ -13,13 +13,12 @@ let _saveTimer;
 
 // SHARED STATE — αποθήκευση στο archive root ώστε να το δουν κι άλλοι χρήστες
 // ═══════════════════════════════════════════════════════════
-let _sharedSaveTimer;
 export function scheduleSharedSave() {
   clearTimeout(_sharedSaveTimer);
   _sharedSaveTimer = setTimeout(() => saveStateToArchiveRoot(), 2000);
 }
 
-async export function saveStateToArchiveRoot() {
+export async function saveStateToArchiveRoot() {
   if (!state.archiveRoot.handle) return;
   try {
     const ok = await verifyPermission(state.archiveRoot.handle, 'readwrite');
@@ -41,14 +40,14 @@ async export function saveStateToArchiveRoot() {
   }
 }
 
-async export function writeJsonToDir(dir, name, data) {
+export async function writeJsonToDir(dir, name, data) {
   const fileHandle = await dir.getFileHandle(name, { create: true });
   const writable = await fileHandle.createWritable();
   await writable.write(JSON.stringify(data, null, 2));
   await writable.close();
 }
 
-async export function readJsonFromDir(dir, name) {
+export async function readJsonFromDir(dir, name) {
   try {
     const fh = await dir.getFileHandle(name, { create: false });
     const file = await fh.getFile();
@@ -57,7 +56,7 @@ async export function readJsonFromDir(dir, name) {
   } catch (e) { return null; }
 }
 
-async export function loadStateFromArchiveRoot() {
+export async function loadStateFromArchiveRoot() {
   if (!state.archiveRoot.handle) return null;
   try {
     const metaDir = await state.archiveRoot.handle.getDirectoryHandle('.parastatika', { create: false });
@@ -74,7 +73,7 @@ async export function loadStateFromArchiveRoot() {
   }
 }
 
-async export function reloadFromShared() {
+export async function reloadFromShared() {
   if (!state.archiveRoot.handle) {
     toast('Δεν έχει επιλεγεί ριζικός φάκελος', 'err');
     return;
@@ -136,7 +135,7 @@ export const FS_SUPPORTED = typeof window.showDirectoryPicker === 'function';
  * Παράδειγμα: αν υπάρχει ήδη "314070-DHL" και προσπαθούμε να αρχειοθετήσουμε
  * σε "314070-DHL_EXPRESS", θα εντοπίσει και θα χρησιμοποιήσει το "314070-DHL".
  */
-async export function resolveSupplierFolder(sapCode, defaultName) {
+export async function resolveSupplierFolder(sapCode, defaultName) {
   if (!state.archiveRoot.handle || !sapCode) return defaultName;
   // Cache hit
   if (state.folderCache.has(sapCode)) return state.folderCache.get(sapCode);
@@ -170,7 +169,7 @@ export function idbOpen() {
     req.onerror = () => reject(req.error);
   });
 }
-async export function idbSaveHandle(handle) {
+export async function idbSaveHandle(handle) {
   try {
     const db = await idbOpen();
     return new Promise((res, rej) => {
@@ -181,7 +180,7 @@ async export function idbSaveHandle(handle) {
     });
   } catch (e) { console.warn('IDB save failed:', e); }
 }
-async export function idbLoadHandle() {
+export async function idbLoadHandle() {
   try {
     const db = await idbOpen();
     return new Promise((res) => {
@@ -192,7 +191,7 @@ async export function idbLoadHandle() {
     });
   } catch (e) { return null; }
 }
-async export function idbClearHandle() {
+export async function idbClearHandle() {
   try {
     const db = await idbOpen();
     return new Promise((res) => {
@@ -212,7 +211,7 @@ export function idbKvGet(store, key) {
     req.onerror = () => res(null);
   });
 }
-async export function idbSaveState() {
+export async function idbSaveState() {
   try {
     const db = await idbOpen();
     return new Promise((res, rej) => {
@@ -227,7 +226,7 @@ async export function idbSaveState() {
     });
   } catch (e) { console.warn('State save failed:', e); }
 }
-async export function idbLoadState() {
+export async function idbLoadState() {
   try {
     const db = await idbOpen();
     return new Promise((res) => {
@@ -253,13 +252,12 @@ async export function idbLoadState() {
 }
 
 // Debounced auto-save μετά από κάθε mutation
-let _saveTimer;
 export function scheduleSave() {
   clearTimeout(_saveTimer);
   _saveTimer = setTimeout(() => idbSaveState(), 500);
 }
 
-async export function verifyPermission(handle, mode = 'readwrite') {
+export async function verifyPermission(handle, mode = 'readwrite') {
   if (!handle) return false;
   const options = { mode };
   try {
@@ -269,7 +267,7 @@ async export function verifyPermission(handle, mode = 'readwrite') {
   return false;
 }
 
-async export function pickArchiveRoot() {
+export async function pickArchiveRoot() {
   if (!FS_SUPPORTED) {
     alert('Ο browser σου δεν υποστηρίζει File System Access API.\n\nΧρησιμοποίησε Chrome ή Edge για αυτή τη λειτουργία.\n\nΣτο μεταξύ, χρησιμοποίησε το κουμπί "Download ZIP" για μαζικό κατέβασμα.');
     return;
@@ -344,7 +342,7 @@ export function showSandboxInstructions() {
   });
 }
 
-async export function clearArchiveRoot() {
+export async function clearArchiveRoot() {
   state.archiveRoot = { handle: null, name: null };
   state.folderCache.clear();
   await idbClearHandle();
@@ -366,7 +364,7 @@ export function updateArchiveRootDisplay() {
   }
 }
 
-async export function writeToDisk(supplierFolder, filename, bytes) {
+export async function writeToDisk(supplierFolder, filename, bytes) {
   if (!state.archiveRoot.handle) throw new Error('Δεν έχει επιλεγεί ριζικός φάκελος');
   const ok = await verifyPermission(state.archiveRoot.handle, 'readwrite');
   if (!ok) throw new Error('Δεν υπάρχει άδεια γραφής');
@@ -388,7 +386,7 @@ async export function writeToDisk(supplierFolder, filename, bytes) {
   return { finalName: filename, fullPath: `${state.archiveRoot.name}/${supplierFolder}/${filename}` };
 }
 
-async export function fileExists(dirHandle, filename) {
+export async function fileExists(dirHandle, filename) {
   try {
     await dirHandle.getFileHandle(filename, { create: false });
     return true;
@@ -417,7 +415,7 @@ export function findDuplicateInvoice(supplierId, invoiceNumber, sapDocNumber) {
 
 // PDF SPLITTING — για unmerge πολλαπλών τιμολογίων σε ένα PDF
 // ═══════════════════════════════════════════════════════════
-async export function splitPdfByPages(pdfBytes, pageStart, pageEnd) {
+export async function splitPdfByPages(pdfBytes, pageStart, pageEnd) {
   if (typeof PDFLib === 'undefined') throw new Error('pdf-lib δεν φόρτωσε');
   const { PDFDocument } = PDFLib;
   const srcDoc = await PDFDocument.load(pdfBytes);
@@ -441,7 +439,7 @@ export function storeArchivedFile(folderPath, filename, bytes) {
   state.archivedFiles.set(key, { folderPath, filename, bytes });
 }
 
-async export function downloadArchiveZip() {
+export async function downloadArchiveZip() {
   if (typeof JSZip === 'undefined') { toast('JSZip δεν φόρτωσε', 'err'); return; }
   if (state.archivedFiles.size === 0) { toast('Δεν υπάρχουν αρχειοθετημένα', 'err'); return; }
   const zip = new JSZip();

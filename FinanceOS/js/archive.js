@@ -5,7 +5,7 @@ import { verifyPermission } from './storage.js';
 
 state.archiveBrowserCache = null;  // { folders: [{name, files: [names]}] }
 
-async export function loadArchiveBrowser(force = false) {
+export async function loadArchiveBrowser(force = false) {
   const container = $('#archive-browser-content');
   if (!state.archiveRoot.handle) {
     container.innerHTML = `<div class="archive-empty">
@@ -125,7 +125,7 @@ export function renderArchiveBrowser() {
   });
 }
 
-async export function openArchivedFileFromDisk(folderName, filename) {
+export async function openArchivedFileFromDisk(folderName, filename) {
   try {
     const dir = await state.archiveRoot.handle.getDirectoryHandle(folderName);
     const fh = await dir.getFileHandle(filename);

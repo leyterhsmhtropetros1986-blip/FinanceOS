@@ -10,7 +10,9 @@ OUT = ROOT / 'FinanceOS'
 
 
 def read_src():
-    return SRC.read_text(encoding='utf-8')
+    import os
+    src = Path(os.environ.get('SRC', SRC))
+    return src.read_text(encoding='utf-8')
 
 
 def write(rel: str, content: str):
@@ -28,10 +30,22 @@ def slice_js(js: str, start_marker: str, end_marker: str | None = None) -> str:
 
 
 def export_funcs(code: str, names: list[str]) -> str:
+    """Export functions — skip already-exported; async before sync replacement."""
     for name in names:
-        code = code.replace(f'function {name}(', f'export function {name}(')
-        code = code.replace(f'async function {name}(', f'export async function {name}(')
+        if f'export async function {name}(' in code or f'export function {name}(' in code:
+            continue
+        if f'async function {name}(' in code:
+            code = code.replace(f'async function {name}(', f'export async function {name}(')
+        elif f'function {name}(' in code:
+            code = code.replace(f'function {name}(', f'export function {name}(')
     return code
+
+
+def strip_timer_decls(code: str) -> str:
+    return re.sub(r'^let _sharedSaveTimer;\n', '', code, flags=re.M).replace(
+        'let _saveTimer;\nfunction scheduleSave',
+        'function scheduleSave',
+    )
 
 
 def strip_upload_listeners(body: str) -> str:
@@ -67,8 +81,8 @@ import {{
   runRealOCR, renderToCanvases, matchSupplier, validateForArchive, buildArchiveFilename,
 }} from './ocr.js';
 
-const uploadZone = $('#upload-zone');
-const fileInput = $('#file-input');
+let uploadZoneEl;
+let fileInputEl;
 
 {body}
 
@@ -80,20 +94,22 @@ export function applyPreviewZoom() {{
 }}
 
 export function initUpload() {{
-  uploadZone?.addEventListener('click', (e) => {{
-    if (e.target.tagName !== 'LABEL') fileInput.click();
+  uploadZoneEl = $('#upload-zone');
+  fileInputEl = $('#file-input');
+  uploadZoneEl?.addEventListener('click', (e) => {{
+    if (e.target.tagName !== 'LABEL') fileInputEl.click();
   }});
-  uploadZone?.addEventListener('dragover', (e) => {{ e.preventDefault(); uploadZone.classList.add('is-dragover'); }});
-  uploadZone?.addEventListener('dragleave', () => uploadZone.classList.remove('is-dragover'));
-  uploadZone?.addEventListener('drop', (e) => {{
+  uploadZoneEl?.addEventListener('dragover', (e) => {{ e.preventDefault(); uploadZoneEl.classList.add('is-dragover'); }});
+  uploadZoneEl?.addEventListener('dragleave', () => uploadZoneEl.classList.remove('is-dragover'));
+  uploadZoneEl?.addEventListener('drop', (e) => {{
     e.preventDefault();
-    uploadZone.classList.remove('is-dragover');
+    uploadZoneEl.classList.remove('is-dragover');
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
     if (files.length === 1) handleFile(files[0]);
     else handleBatch(files);
   }});
-  fileInput?.addEventListener('change', (e) => {{
+  fileInputEl?.addEventListener('change', (e) => {{
     const files = Array.from(e.target.files);
     if (files.length === 0) return;
     if (files.length === 1) handleFile(files[0]);
@@ -110,7 +126,7 @@ export function initUpload() {{
       }} else {{
         $('#batch-panel').hidden = true;
         $('#upload-zone').hidden = false;
-        fileInput.value = '';
+        fileInputEl.value = '';
       }}
     }}
   }});
@@ -320,6 +336,12 @@ export {{ $, $$, toast, fmtDate, fmtDateTime, fmtISODate, confidenceClass, escap
 
     audit_fn = export_funcs(slice_js(js, 'function audit(action', 'function seedSuppliers'), ['audit'])
     audit_view = slice_js(js, '// AUDIT VIEW', '// BOOT')
+    audit_view = re.sub(
+        r"\$\('#audit-action'\)\.addEventListener\('change', renderAudit\);\n"
+        r"\$\('#audit-outcome'\)\.addEventListener\('change', renderAudit\);\n\n",
+        '',
+        audit_view,
+    )
     audit_code = f"""/** Audit trail */
 import {{ state }} from './state.js';
 import {{ $, fmtDateTime, escapeHtml }} from './utils.js';
@@ -352,7 +374,9 @@ export function initAuditView() {{
         'arrayBufferToBase64', 'downscaleCanvas',
     ]
     storage_body = export_funcs(
-        storage_shared + '\n\n' + storage_user + '\n\n' + storage_fs + '\n\n' + pdf_split + '\n\n' + archive_store,
+        strip_timer_decls(
+            storage_shared + '\n\n' + storage_user + '\n\n' + storage_fs + '\n\n' + pdf_split + '\n\n' + archive_store
+        ),
         storage_exports,
     )
     storage_body = storage_body.replace(
@@ -400,7 +424,7 @@ import {{ pickArchiveRoot, clearArchiveRoot, reloadFromShared, updateArchiveRoot
 """)
 
     ocr_body = export_funcs(
-        slice_js(js, '// REAL OCR — Tesseract', 'function audit(action'),
+        slice_js(js, '// REAL OCR — Tesseract', 'function audit(action').replace('let _tesseractWorker = null;', ''),
         [
             'getWorker', 'renderPdfToCanvases', 'loadImageToCanvas', 'runRealOCR', 'renderToCanvases',
             'extractAfm', 'extractInvoiceNumber', 'extractDate', 'extractSapDocCandidates',
@@ -571,6 +595,7 @@ import {{ audit }} from './audit.js';
 
     upload_body = strip_upload_listeners(upload_body)
     upload_body = upload_body.replace('updateReviewBadge();', "window.dispatchEvent(new CustomEvent('review-badge-update'));")
+    upload_body = upload_body.replace('fileInput.value = \'\'', "$('#file-input').value = ''")
     write('js/upload.js', build_upload_module(upload_body))
 
     write('js/badges.js', """/** Navigation badge updates */
@@ -611,9 +636,11 @@ export function initInvoices() {{
 
     suppliers_seed = export_funcs(slice_js(js, 'function seedSuppliers', '// NAVIGATION'), ['seedSuppliers'])
     suppliers_view = slice_js(js, '// SUPPLIERS VIEW', '// AUDIT VIEW')
-    suppliers_view = re.sub(r"\$\('#supplier-search'\).*?\n\n", '', suppliers_view)
-    suppliers_view = re.sub(r"\$\('#btn-regen-folders'\).*?\}\);\n", '', suppliers_view, flags=re.S)
-    suppliers_view = re.sub(r"\$\('#excel-input'\).*?\}\);\n", '', suppliers_view, flags=re.S)
+    suppliers_view = re.sub(
+        r"\$\('#supplier-search'\)\.addEventListener[\s\S]*?e\.target\.value = '';\n\}\);\n",
+        '',
+        suppliers_view,
+    )
     suppliers_exports = [
         'parseXLSX', 'parseCSVToRows', 'resolveColumns', 'extractAfmFromVat', 'slugify',
         'extractShortSupplierName', 'buildSupplierFolder', 'importSupplierRows', 'parseCSVLine',
@@ -622,8 +649,8 @@ export function initInvoices() {{
     suppliers_body = export_funcs(suppliers_seed + '\n\n' + suppliers_view, suppliers_exports)
     write('js/suppliers.js', f"""/** Suppliers import & management */
 import {{ state }} from './state.js';
-import {{ $, toast, debounce }} from './utils.js';
-import {{ stripAccents }} from './helpers.js';
+import {{ $, toast, debounce, escapeHtml }} from './utils.js';
+import {{ stripAccents, normalizeForMatch }} from './helpers.js';
 import {{ audit }} from './audit.js';
 import {{ scheduleSave }} from './storage.js';
 
@@ -679,7 +706,19 @@ export function initSearch() {
 """)
 
     nav = slice_js(js, '// NAVIGATION', '// UPLOAD FLOW')
+    nav = re.sub(r'function updateReviewBadge\(\) \{[\s\S]*?\n\}\n', '', nav)
+    nav = re.sub(
+        r"// Archive browser search \+ refresh[\s\S]*?\$\('#dash-period'\).*?\n",
+        '',
+        nav,
+    )
     boot = slice_js(js, '// BOOT', '').replace('(async () => {', 'async function boot() {').replace('})();', '}')
+    boot = re.sub(
+        r"// Global error handlers\nwindow\.addEventListener\('error'[\s\S]*?console\.error\('Unhandled rejection:'[\s\S]*?\}\);\n\n",
+        '',
+        boot,
+        count=1,
+    )
     boot = boot.replace('loadSettings();', 'loadSettings();\n  loadCurrentUser();')
     boot = boot.replace('initSettings();', 'initSettings();\n  initNavigation();\n  initUpload();\n  initInvoices();\n  initSuppliers();\n  initAuditView();\n  initSearch();')
 
@@ -699,7 +738,7 @@ import {{ state }} from './state.js';
 import {{ $, toast }} from './utils.js';
 
 export function initNavigation() {{
-{chr(10).join('  ' + line for line in nav.splitlines() if not line.strip().startswith('function updateReviewBadge') and not line.strip().startswith('// Archive browser') and not line.strip().startswith("$('#archive-search')") and not line.strip().startswith("$('#btn-archive-refresh')") and not line.strip().startswith('// Dashboard period') and not line.strip().startswith("$('#dash-period')"))}
+{chr(10).join('  ' + line for line in nav.splitlines())}
 }}
 
 window.addEventListener('error', (e) => {{
@@ -711,9 +750,13 @@ window.addEventListener('unhandledrejection', (e) => {{
 
 {boot}
 
-  window.addEventListener('review-badge-update', updateReviewBadge);
+window.addEventListener('review-badge-update', updateReviewBadge);
 
-boot();
+if (document.readyState === 'loading') {{
+  document.addEventListener('DOMContentLoaded', () => boot());
+}} else {{
+  boot();
+}}
 """)
 
     # index.html

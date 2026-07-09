@@ -6,9 +6,9 @@ let _tesseractWorker = null;
 
 // REAL OCR — Tesseract.js (ell+eng) + PDF.js
 // ═══════════════════════════════════════════════════════════
-let _tesseractWorker = null;
 
-async export function getWorker(onProgress) {
+
+export async function getWorker(onProgress) {
   if (_tesseractWorker) return _tesseractWorker;
   onProgress && onProgress('Φόρτωση Tesseract (ell+eng)…', 0);
   _tesseractWorker = await Tesseract.createWorker(['ell', 'eng'], 1, {
@@ -23,7 +23,7 @@ async export function getWorker(onProgress) {
   return _tesseractWorker;
 }
 
-async export function renderPdfToCanvases(file, onProgress) {
+export async function renderPdfToCanvases(file, onProgress) {
   const buffer = await file.arrayBuffer();
   const pdf = await window.pdfjsLib.getDocument({ data: buffer }).promise;
   const canvases = [];
@@ -43,7 +43,7 @@ async export function renderPdfToCanvases(file, onProgress) {
   return canvases;
 }
 
-async export function loadImageToCanvas(file) {
+export async function loadImageToCanvas(file) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
@@ -58,7 +58,7 @@ async export function loadImageToCanvas(file) {
   });
 }
 
-async export function runRealOCR(file, onProgress, existingCanvases = null) {
+export async function runRealOCR(file, onProgress, existingCanvases = null) {
   const t0 = performance.now();
   const canvases = existingCanvases || await renderToCanvases(file, onProgress);
 
@@ -106,7 +106,7 @@ async export function runRealOCR(file, onProgress, existingCanvases = null) {
  * Ξεχωριστό από το OCR ώστε να μπορούμε να δείξουμε preview
  * αν το OCR αποτύχει.
  */
-async export function renderToCanvases(file, onProgress) {
+export async function renderToCanvases(file, onProgress) {
   const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
   if (isPdf) {
     return await renderPdfToCanvases(file, onProgress);
@@ -524,6 +524,9 @@ export function buildArchiveFilename(invoiceNo, sapDocNo, dateISO) {
   const digitsOnly = digitBlock || raw.replace(/\D/g, '');
   const inv = 'INV' + (digitsOnly || 'UNKNOWN');
   const sap = sanitizePart(sapDocNo);
+  return `${inv}_${sap}_${y}${m}${d}.pdf`;
+}
+
 // ═══════════════════════════════════════════════════════════
-// VALIDATION (spec §7)
+// AUDIT LOG
 // ═══════════════════════════════════════════════════════════

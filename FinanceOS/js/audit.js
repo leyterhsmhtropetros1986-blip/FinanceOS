@@ -28,9 +28,6 @@ export function initAuditView() {
 
 // AUDIT VIEW
 // ═══════════════════════════════════════════════════════════
-$('#audit-action').addEventListener('change', renderAudit);
-$('#audit-outcome').addEventListener('change', renderAudit);
-
 export function renderAudit() {
   const action = $('#audit-action').value;
   const outcome = $('#audit-outcome').value;

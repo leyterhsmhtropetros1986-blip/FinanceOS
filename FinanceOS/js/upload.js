@@ -12,8 +12,8 @@ import {
   runRealOCR, renderToCanvases, matchSupplier, validateForArchive, buildArchiveFilename,
 } from './ocr.js';
 
-const uploadZone = $('#upload-zone');
-const fileInput = $('#file-input');
+let uploadZoneEl;
+let fileInputEl;
 
 // BATCH PROCESSING — bulk upload πολλών τιμολογίων
 // ═══════════════════════════════════════════════════════════
@@ -26,7 +26,7 @@ state.batch = {
   stats: { archived: 0, review: 0, failed: 0 },
 };
 
-async export function handleBatch(files) {
+export async function handleBatch(files) {
   // Χρειάζεται AI για bulk — Tesseract είναι πολύ αργό
   const useAI = state.settings.provider === 'anthropic' && state.settings.apiKey;
   if (!useAI) {
@@ -92,7 +92,7 @@ async export function handleBatch(files) {
   showBatchSummary();
 }
 
-async export function processBatchItem(item, useAI) {
+export async function processBatchItem(item, useAI) {
   // 1. Unwrap
   const unwrapped = await unwrapFile(item.file);
   const file = unwrapped.file;
@@ -403,7 +403,7 @@ export function showBatchSummary() {
   document.getElementById('btn-new-batch').addEventListener('click', () => {
     $('#batch-panel').hidden = true;
     $('#upload-zone').hidden = false;
-    fileInput.value = '';
+    $('#file-input').value = '';
   });
   toast(`Ολοκληρώθηκε: ${s.archived}✓ ${dup > 0 ? dup + '⇈ ' : ''}${s.review}⚠ ${s.failed}✗`, 'ok');
 }
@@ -426,7 +426,7 @@ const guessMime = (name) => {
   return IMAGE_MIMES[ext] || 'application/octet-stream';
 };
 
-async export function unwrapFile(file, onStatus) {
+export async function unwrapFile(file, onStatus) {
   const name = file.name.toLowerCase();
 
   // Άμεσα υποστηριζόμενα
@@ -481,7 +481,7 @@ async export function unwrapFile(file, onStatus) {
 }
 
 // ─── TIFF ────────────────────────────────────────────────
-async export function unwrapTiff(file) {
+export async function unwrapTiff(file) {
   const buffer = await file.arrayBuffer();
   const ifds = UTIF.decode(buffer);
   if (!ifds.length) throw new Error('Άκυρο TIFF');
@@ -500,7 +500,7 @@ async export function unwrapTiff(file) {
 }
 
 // ─── HEIC ────────────────────────────────────────────────
-async export function unwrapHeic(file) {
+export async function unwrapHeic(file) {
   if (typeof heic2any === 'undefined') throw new Error('HEIC library δεν φορτώθηκε');
   const blob = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.9 });
   const newName = file.name.replace(/\.(heic|heif)$/i, '.jpg');
@@ -508,7 +508,7 @@ async export function unwrapHeic(file) {
 }
 
 // ─── Outlook .msg (OLE Compound File) ────────────────────
-async export function unwrapMsg(file, onStatus) {
+export async function unwrapMsg(file, onStatus) {
   // Lazy-load το msgreader — είναι ES module
   onStatus && onStatus('Φόρτωση msgreader…');
   const mod = await import('https://esm.sh/@kenjiuno/msgreader@1.22.0');
@@ -541,7 +541,7 @@ async export function unwrapMsg(file, onStatus) {
 }
 
 // ─── Standard .eml (MIME) ────────────────────────────────
-async export function unwrapEml(file) {
+export async function unwrapEml(file) {
   const text = await file.text();
   // Απλός MIME parser — αρκετά καλός για invoices από scanners
   const boundaryMatch = text.match(/boundary=["']?([^"'\r\n;]+)["']?/i);
@@ -578,7 +578,7 @@ async export function unwrapEml(file) {
 }
 
 // ─── ZIP archives ─────────────────────────────────────────
-async export function unwrapZip(file) {
+export async function unwrapZip(file) {
   if (typeof JSZip === 'undefined') throw new Error('JSZip δεν φορτώθηκε');
   const buffer = await file.arrayBuffer();
   const zip = await JSZip.loadAsync(buffer);
@@ -611,7 +611,7 @@ async export function unwrapZip(file) {
 
 // UPLOAD HANDLER — τώρα δέχεται όλα
 // ═══════════════════════════════════════════════════════════
-async export function handleFile(originalFile) {
+export async function handleFile(originalFile) {
   if (originalFile.size > 100 * 1024 * 1024) {
     toast('Το αρχείο ξεπερνά τα 100MB', 'err');
     return;
@@ -1031,11 +1031,18 @@ export function renderSupplierCandidates(candidates) {
   }
 }
 
-export function applyPreviewZoom() {
-  $('#preview-zoom-label').textContent = `${state.previewZoom}%`;
-  document.querySelectorAll('#preview-container .preview-page').forEach(c => {
-    c.style.width = `${state.previewZoom}%`;
-  });
+
+export function showValidationErrors(errors) {
+  const box = $('#validation-errors');
+  box.innerHTML = '<div class="validation-errors-title">Απαιτούνται διορθώσεις</div><ul></ul>';
+  const ul = box.querySelector('ul');
+  for (const e of errors) {
+    const li = document.createElement('li');
+    li.textContent = `• ${e.message}`;
+    ul.appendChild(li);
+  }
+  box.hidden = false;
+  box.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 export function resetUploadView() {
@@ -1043,26 +1050,35 @@ export function resetUploadView() {
   state.currentUpload = null;
   $('#review').hidden = true;
   $('#upload-zone').hidden = false;
-  fileInput.value = '';
+  $('#file-input').value = '';
 }
 
 // ═══════════════════════════════════════════════════════════
 
-export function initUpload() {
-  uploadZone?.addEventListener('click', (e) => {
-    if (e.target.tagName !== 'LABEL') fileInput.click();
+export function applyPreviewZoom() {
+  $('#preview-zoom-label').textContent = `${state.previewZoom}%`;
+  document.querySelectorAll('#preview-container .preview-page').forEach(c => {
+    c.style.width = `${state.previewZoom}%`;
   });
-  uploadZone?.addEventListener('dragover', (e) => { e.preventDefault(); uploadZone.classList.add('is-dragover'); });
-  uploadZone?.addEventListener('dragleave', () => uploadZone.classList.remove('is-dragover'));
-  uploadZone?.addEventListener('drop', (e) => {
+}
+
+export function initUpload() {
+  uploadZoneEl = $('#upload-zone');
+  fileInputEl = $('#file-input');
+  uploadZoneEl?.addEventListener('click', (e) => {
+    if (e.target.tagName !== 'LABEL') fileInputEl.click();
+  });
+  uploadZoneEl?.addEventListener('dragover', (e) => { e.preventDefault(); uploadZoneEl.classList.add('is-dragover'); });
+  uploadZoneEl?.addEventListener('dragleave', () => uploadZoneEl.classList.remove('is-dragover'));
+  uploadZoneEl?.addEventListener('drop', (e) => {
     e.preventDefault();
-    uploadZone.classList.remove('is-dragover');
+    uploadZoneEl.classList.remove('is-dragover');
     const files = Array.from(e.dataTransfer.files);
     if (files.length === 0) return;
     if (files.length === 1) handleFile(files[0]);
     else handleBatch(files);
   });
-  fileInput?.addEventListener('change', (e) => {
+  fileInputEl?.addEventListener('change', (e) => {
     const files = Array.from(e.target.files);
     if (files.length === 0) return;
     if (files.length === 1) handleFile(files[0]);
@@ -1079,7 +1095,7 @@ export function initUpload() {
       } else {
         $('#batch-panel').hidden = true;
         $('#upload-zone').hidden = false;
-        fileInput.value = '';
+        fileInputEl.value = '';
       }
     }
   });

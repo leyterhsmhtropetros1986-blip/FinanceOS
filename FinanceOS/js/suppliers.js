@@ -1,7 +1,7 @@
 /** Suppliers import & management */
 import { state } from './state.js';
-import { $, toast, debounce } from './utils.js';
-import { stripAccents } from './helpers.js';
+import { $, toast, debounce, escapeHtml } from './utils.js';
+import { stripAccents, normalizeForMatch } from './helpers.js';
 import { audit } from './audit.js';
 import { scheduleSave } from './storage.js';
 
@@ -29,19 +29,8 @@ export function seedSuppliers() {
 
 // SUPPLIERS VIEW
 // ═══════════════════════════════════════════════════════════
-  toast(`Ενημερώθηκαν ${changed} folder paths`, 'ok');
-  renderSuppliers();
-});
-    renderSuppliers();
-    toast(`+${result.imported} νέοι, ${result.updated} ενημερώθηκαν`, 'ok');
-  } catch (err) {
-    toast(`Σφάλμα εισαγωγής: ${err.message}`, 'err');
-    console.error(err);
-  }
-  e.target.value = '';
-});
 
-async export function parseXLSX(file) {
+export async function parseXLSX(file) {
   const buffer = await file.arrayBuffer();
   const wb = XLSX.read(buffer, { type: 'array' });
   const sheet = wb.Sheets[wb.SheetNames[0]];
