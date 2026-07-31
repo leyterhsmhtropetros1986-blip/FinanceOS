@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Verify trackAIUsage is defined and OCR pipeline symbols resolve */
 import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', 'FinanceOS', 'js');
@@ -24,7 +24,7 @@ if (readFileSync(join(root, 'storage.js'), 'utf8').includes('function trackAIUsa
 const modules = ['ai.js', 'ocr.js', 'upload.js', 'field-extractors.js', 'pdf-text.js'];
 for (const m of modules) {
   try {
-    await import(join(root, m));
+    await import(pathToFileURL(join(root, m)));
   } catch (e) {
     if (e.message.includes('window is not defined') || e.message.includes('document')) continue;
     console.error(`FAIL import ${m}:`, e.message);

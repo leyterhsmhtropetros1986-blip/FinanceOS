@@ -7,6 +7,7 @@ import {
 } from './helpers.js';
 import { extractExtendedFields } from './field-extractors.js';
 import { fuzzyFindSupplierInText } from './ocr-confidence.js';
+import { normalizeVat, inferCountryFromVat } from './normalize.js';
 
 const MAX_POOL = 4;
 const _pool = [];
@@ -416,6 +417,8 @@ export function extractAllFields(pages, fullText) {
   const sapCands = extractSapDocCandidates(pages, fullText);
   const sup = extractSupplierNameHint(pages);
   const extended = extractExtendedFields(pages, fullText);
+  const vatNormalized = normalizeVat(afm.value).normalizedValue;
+  const country = inferCountryFromVat(vatNormalized);
 
   return {
     afm: afm.value,
@@ -423,21 +426,33 @@ export function extractAllFields(pages, fullText) {
     invoice_date: dt.value,
     sap_doc_number: sapCands[0] ? sapCands[0].value : null,
     supplier_name_hint: sup.value,
+    // Country is *derived* from the already-extracted VAT prefix, never
+    // read from free text — no address extractor exists here (see docs):
+    // reliable postal-address parsing needs layout info OCR doesn't give us,
+    // so supplier_address stays null unless AI Vision fills it in.
+    supplier_country: country,
+    supplier_address: null,
     confidence_afm: afm.confidence,
     confidence_invoice_no: inv.confidence,
     confidence_date: dt.confidence,
     confidence_sap_doc: sapCands[0] ? sapCands[0].confidence : 0,
     confidence_supplier: sup.confidence,
+    confidence_country: country ? 70 : 0,
     sap_doc_candidates: sapCands,
     total_amount: extended.total_amount,
     net_amount: extended.net_amount,
     vat_amount: extended.vat_amount,
     vat_rate: extended.vat_rate,
+    vat_breakdown: extended.vat_breakdown,
     currency: extended.currency,
     purchase_order: extended.purchase_order,
     reference: extended.reference,
     container: extended.container,
     bill_of_lading: extended.bill_of_lading,
+    iban: extended.iban,
+    delivery_note: extended.delivery_note,
+    payment_terms: extended.payment_terms,
+    payment_reference: extended.payment_reference,
     confidence_total: extended.confidence_total,
     confidence_net: extended.confidence_net,
     confidence_vat: extended.confidence_vat,
@@ -446,6 +461,10 @@ export function extractAllFields(pages, fullText) {
     confidence_reference: extended.confidence_reference,
     confidence_container: extended.confidence_container,
     confidence_bl: extended.confidence_bl,
+    confidence_iban: extended.confidence_iban,
+    confidence_delivery_note: extended.confidence_delivery_note,
+    confidence_payment_terms: extended.confidence_payment_terms,
+    confidence_payment_reference: extended.confidence_payment_reference,
   };
 }
 

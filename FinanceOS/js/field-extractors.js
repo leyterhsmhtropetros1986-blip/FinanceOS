@@ -13,6 +13,17 @@ const CONTAINER_KEYWORDS = ['CONTAINER', 'CNTR', 'ΕΜΚ'];
 const BL_KEYWORDS = ['B/L', 'BILL OF LADING', 'BL NO', 'ΦΟΡΤΩΤΙΚΗ', 'BOL'];
 const BOOKING_KEYWORDS = ['BOOKING', 'BOOKING NO', 'BOOKING NUMBER', 'ΚΡΑΤΗΣΗ'];
 const SHIPMENT_KEYWORDS = ['SHIPMENT', 'SHIPMENT NO', 'SHPMT', 'ΑΠΟΣΤΟΛΗ'];
+const IBAN_KEYWORDS = ['IBAN', 'ΙΒΑΝ'];
+const IBAN_RE = /\b([A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]{4}){2,7})\b/;
+const DELIVERY_NOTE_KEYWORDS = [
+  'DELIVERY NOTE', 'DESPATCH NOTE', 'ΔΕΛΤΙΟ ΑΠΟΣΤΟΛΗΣ', 'ΣΥΝΟΔΕΥΤΙΚΟ', 'Δ.Α.', 'ΔΑ ΑΡ',
+];
+const PAYMENT_TERMS_KEYWORDS = [
+  'PAYMENT TERMS', 'TERMS OF PAYMENT', 'ΟΡΟΙ ΠΛΗΡΩΜΗΣ', 'ΤΡΟΠΟΣ ΠΛΗΡΩΜΗΣ',
+];
+const PAYMENT_REFERENCE_KEYWORDS = [
+  'PAYMENT REFERENCE', 'REMITTANCE', 'ΑΙΤΙΟΛΟΓΙΑ ΠΛΗΡΩΜΗΣ', 'ΚΩΔΙΚΟΣ ΠΛΗΡΩΜΗΣ',
+];
 
 function parseAmount(raw) {
   if (raw == null) return null;
@@ -120,6 +131,59 @@ export function extractShipmentNumber(fullText) {
   return findLabeledValue(fullText, SHIPMENT_KEYWORDS, /([A-Z0-9][A-Z0-9\-/]{5,20})/i);
 }
 
+export function extractIban(fullText) {
+  const upper = fullText.toUpperCase();
+  // Prefer a window right after an IBAN label — most reliable, and avoids the
+  // fixed-group-of-4 regex mis-truncating IBANs whose tail isn't a multiple of 4.
+  for (const kw of IBAN_KEYWORDS) {
+    let idx = 0;
+    while ((idx = upper.indexOf(kw, idx)) !== -1) {
+      const window = upper.slice(idx + kw.length, idx + kw.length + 40);
+      const cleaned = window.replace(/[^A-Z0-9]/g, '');
+      const m = cleaned.match(/^([A-Z]{2}\d{2}[A-Z0-9]{10,30})/);
+      if (m) return { value: m[1], confidence: 92 };
+      idx += kw.length;
+    }
+  }
+  // Fallback: scan the whole text for an IBAN-shaped token even without a label.
+  const m2 = upper.match(IBAN_RE);
+  if (m2) {
+    const value = m2[1].replace(/\s/g, '');
+    if (value.length >= 15 && value.length <= 34) return { value, confidence: 78 };
+  }
+  return { value: null, confidence: 0 };
+}
+
+export function extractDeliveryNote(fullText) {
+  return findLabeledValue(fullText, DELIVERY_NOTE_KEYWORDS, /([A-Z0-9][A-Z0-9\-/]{2,20})/i);
+}
+
+export function extractPaymentTerms(fullText) {
+  return findLabeledValue(fullText, PAYMENT_TERMS_KEYWORDS, /([^\n\r]{2,40})/);
+}
+
+export function extractPaymentReference(fullText) {
+  return findLabeledValue(fullText, PAYMENT_REFERENCE_KEYWORDS, /([A-Z0-9][A-Z0-9\-/ ]{2,30})/i);
+}
+
+/** Best-effort multi-rate VAT breakdown scan ("if available" per spec —
+ *  returns [] rather than inventing a breakdown when the text doesn't
+ *  clearly contain "<rate>% ... <amount>" patterns). */
+export function extractVatBreakdown(fullText) {
+  const upper = stripAccents(fullText.toUpperCase());
+  const re = /(\d{1,2})\s?%[^\d\n]{0,20}?([0-9]{1,3}(?:[.,][0-9]{3})*(?:[.,][0-9]{2})|[0-9]+[.,][0-9]{2})/g;
+  const byRate = new Map();
+  let m;
+  while ((m = re.exec(upper)) !== null) {
+    const rate = parseInt(m[1], 10);
+    if (rate < 0 || rate > 30) continue;
+    const vat_amount = parseAmount(m[2]);
+    if (vat_amount == null) continue;
+    if (!byRate.has(rate)) byRate.set(rate, { rate, vat_amount, confidence: 65 });
+  }
+  return [...byRate.values()];
+}
+
 export function extractExtendedFields(pages, fullText) {
   const amounts = extractAmounts(fullText);
   const currency = extractCurrency(fullText);
@@ -129,6 +193,11 @@ export function extractExtendedFields(pages, fullText) {
   const bl = extractBillOfLading(fullText);
   const booking = extractBookingNumber(fullText);
   const shipment = extractShipmentNumber(fullText);
+  const iban = extractIban(fullText);
+  const deliveryNote = extractDeliveryNote(fullText);
+  const paymentTerms = extractPaymentTerms(fullText);
+  const paymentReference = extractPaymentReference(fullText);
+  const vatBreakdown = extractVatBreakdown(fullText);
   return {
     ...amounts,
     currency: currency.value,
@@ -145,6 +214,15 @@ export function extractExtendedFields(pages, fullText) {
     confidence_booking: booking.confidence,
     shipment_number: shipment.value,
     confidence_shipment: shipment.confidence,
+    iban: iban.value,
+    confidence_iban: iban.confidence,
+    delivery_note: deliveryNote.value,
+    confidence_delivery_note: deliveryNote.confidence,
+    payment_terms: paymentTerms.value,
+    confidence_payment_terms: paymentTerms.confidence,
+    payment_reference: paymentReference.value,
+    confidence_payment_reference: paymentReference.confidence,
+    vat_breakdown: vatBreakdown,
   };
 }
 
@@ -184,9 +262,25 @@ export function mergeExtractionResults(ocrResult, pdfResult) {
     ['reference', 'confidence_reference'],
     ['container', 'confidence_container'],
     ['bill_of_lading', 'confidence_bl'],
+    ['iban', 'confidence_iban'],
+    ['delivery_note', 'confidence_delivery_note'],
+    ['payment_terms', 'confidence_payment_terms'],
+    ['payment_reference', 'confidence_payment_reference'],
   ];
   const merged = mergeFieldResults(ocrResult, pdfResult, scalarFields);
   if (pdfResult.vat_rate != null && ocrResult.vat_rate == null) merged.vat_rate = pdfResult.vat_rate;
+
+  // Real (not invented) per-field provenance: record which side's value won.
+  const fieldSources = { ...(ocrResult._fieldSources || {}), ...(pdfResult._fieldSources || {}) };
+  for (const [field] of scalarFields) {
+    if (merged[field] == null) continue;
+    if (pdfResult[field] != null && pdfResult[field] === merged[field]) {
+      fieldSources[field] = 'pdf_text';
+    } else if (ocrResult[field] != null && ocrResult[field] === merged[field]) {
+      fieldSources[field] = 'ocr_tesseract';
+    }
+  }
+  merged._fieldSources = fieldSources;
 
   const candMap = new Map();
   for (const c of [...(ocrResult.sap_doc_candidates || []), ...(pdfResult.sap_doc_candidates || [])]) {

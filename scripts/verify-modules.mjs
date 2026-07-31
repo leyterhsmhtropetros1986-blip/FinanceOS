@@ -5,16 +5,18 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const JS_DIR = new URL('../FinanceOS/js/', import.meta.url).pathname;
+const JS_DIR = fileURLToPath(new URL('../FinanceOS/js/', import.meta.url));
 const files = (await readdir(JS_DIR)).filter((f) => f.endsWith('.js')).sort();
+const NODE_BIN = process.env.NODE_BIN || process.execPath;
 
 let failed = 0;
 
 for (const file of files) {
   const path = join(JS_DIR, file);
   const code = await readFile(path, 'utf8');
-  const check = spawnSync('node', ['--check', path], { encoding: 'utf8' });
+  const check = spawnSync(NODE_BIN, ['--check', path], { encoding: 'utf8' });
   if (check.status !== 0) {
     console.error(`SYNTAX FAIL: ${file}\n${check.stderr}`);
     failed++;

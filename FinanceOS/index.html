@@ -317,6 +317,35 @@
 
             <div class="validation-errors" id="validation-errors" hidden></div>
 
+            <!-- SAP Vendor Matching + SAP Preparation (Phase 11) -->
+            <div class="side-block sap-prep-panel" id="sap-prep-panel">
+              <div class="side-block-title" style="display:flex;justify-content:space-between;align-items:center;">
+                <span>SAP Vendor Matching</span>
+                <span id="sap-prep-overall-status" class="status-pill">—</span>
+              </div>
+              <div class="meta-row"><span>Προμηθευτής (εντοπίστηκε)</span><span id="sap-detected-supplier">—</span></div>
+              <div class="meta-row"><span>VAT</span><span id="sap-detected-vat" class="mono">—</span></div>
+              <div class="meta-row"><span>SAP Vendor</span><span id="sap-vendor-code" class="mono">—</span></div>
+              <div class="meta-row"><span>SAP Vendor Name</span><span id="sap-vendor-name">—</span></div>
+              <div class="meta-row"><span>Match</span><span id="sap-match-method">—</span></div>
+              <div class="meta-row"><span>Confidence</span><span id="sap-match-confidence">—</span></div>
+              <span id="sap-match-status-badge" class="status-pill">—</span>
+              <div id="sap-match-evidence" class="candidate-list" style="margin-top:6px;"></div>
+
+              <div class="side-block-title" style="margin-top:10px;">Λογιστικά Στοιχεία</div>
+              <div class="meta-row"><span>PO</span><span id="sap-po" class="mono">—</span></div>
+              <div class="meta-row"><span>Καθαρή</span><span id="sap-net">—</span></div>
+              <div class="meta-row"><span>ΦΠΑ</span><span id="sap-vat">—</span></div>
+              <div class="meta-row"><span>Σύνολο</span><span id="sap-gross">—</span></div>
+              <div class="meta-row"><span>Νόμισμα</span><span id="sap-currency">—</span></div>
+
+              <div class="side-block-title" style="margin-top:10px;">SAP Workflow</div>
+              <span id="sap-workflow-badge" class="status-pill">—</span>
+
+              <div class="side-block-title" style="margin-top:10px;">Έλεγχος Ετοιμότητας SAP</div>
+              <ul id="sap-readiness-checklist" class="candidate-list" style="list-style:none;padding:0;margin:0;"></ul>
+            </div>
+
             <!-- Side info compact -->
             <details style="margin-top:16px;font-size:12px;">
               <summary style="cursor:pointer;color:var(--text-muted);font-weight:500;">
@@ -386,14 +415,29 @@
             <option value="error">Σφάλμα OCR</option>
             <option value="processing">Σε επεξεργασία</option>
           </select>
+          <select id="invoice-filter-workflow" title="Φίλτρο ροής εργασίας">
+            <option value="">Όλες οι ροές</option>
+            <option value="PO_INVOICE">PO Invoice (MIRO)</option>
+            <option value="NON_PO_INVOICE">Non-PO (FB60)</option>
+            <option value="UNKNOWN">Άγνωστο / Review</option>
+          </select>
+          <select id="invoice-filter-currency" title="Φίλτρο νομίσματος">
+            <option value="">Όλα τα νομίσματα</option>
+          </select>
+          <input type="text" id="invoice-filter-sap-vendor" placeholder="SAP Vendor code/name…" style="width:160px" />
+          <button class="btn btn-secondary" id="btn-toggle-vendor-grouping" title="Ομαδοποίηση ανά SAP Vendor">🗂 Ανά Vendor</button>
           <button class="btn btn-secondary" id="btn-export-excel" title="Εξαγωγή όλων των αρχειοθετημένων σε Excel">
             📊 Excel
+          </button>
+          <button class="btn btn-secondary" id="btn-export-sap-ready" title="Εξαγωγή SAP-READY τιμολογίων — ενδιάμεσο FinanceOS dataset, όχι επίσημη μορφή SAP">
+            📤 SAP-Ready Export
           </button>
         </div>
       </header>
       <div id="invoice-bulk-bar" class="bulk-bar" hidden>
         <span id="invoice-bulk-count">0 επιλεγμένα</span>
         <div class="bulk-actions">
+          <button class="btn btn-primary btn-sm" id="btn-bulk-prepare-sap" title="Προετοιμασία για SAP — ΔΕΝ καταχωρεί στο SAP">Prepare for SAP</button>
           <button class="btn btn-secondary btn-sm" id="btn-bulk-excel">Export Excel</button>
           <button class="btn btn-secondary btn-sm" id="btn-bulk-pdf">Export PDF</button>
           <button class="btn btn-ghost btn-sm" id="btn-bulk-delete">Delete</button>
@@ -413,6 +457,8 @@
               <th class="col-invno">Τιμολόγιο</th>
               <th class="col-date">Ημερομηνία</th>
               <th class="col-sap">SAP Doc</th>
+              <th class="col-sap-vendor">SAP Vendor</th>
+              <th class="col-sap-status">SAP Status</th>
               <th class="col-status">Status</th>
               <th class="col-actions">Ενέργειες</th>
             </tr>
@@ -437,7 +483,7 @@
       <div class="table-wrap">
         <table class="data-table" id="suppliers-table">
           <thead>
-            <tr><th>ΑΦΜ</th><th>SAP Vendor</th><th>Επωνυμία</th><th>Folder Path</th><th>Status</th></tr>
+            <tr><th>ΑΦΜ</th><th>SAP Vendor</th><th>Επωνυμία</th><th>IBAN</th><th>Company Code</th><th>Folder Path</th><th>Status</th></tr>
           </thead>
           <tbody></tbody>
         </table>
@@ -459,6 +505,11 @@
             <option value="validation">validation</option>
             <option value="manual_override">manual_override</option>
             <option value="supplier_import">supplier_import</option>
+            <option value="mapping_created">mapping_created</option>
+            <option value="mapping_changed">mapping_changed</option>
+            <option value="duplicate_detected">duplicate_detected</option>
+            <option value="sap_ready">sap_ready</option>
+            <option value="sap_export">sap_export</option>
           </select>
           <select id="audit-outcome">
             <option value="">Όλα τα outcomes</option>

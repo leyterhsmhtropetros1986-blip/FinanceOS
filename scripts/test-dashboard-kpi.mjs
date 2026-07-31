@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /** Dashboard financial KPI unit checks */
 import { readFile } from 'node:fs/promises';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { join, dirname } from 'node:path';
 
-const ROOT = join(dirname(new URL(import.meta.url).pathname), '..', 'FinanceOS', 'js');
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', 'FinanceOS', 'js');
 
 // Minimal mocks for browser-only deps
 const state = {

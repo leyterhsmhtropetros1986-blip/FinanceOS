@@ -2,6 +2,7 @@
 import { state } from './state.js';
 import { $, toast, debounce, escapeHtml } from './utils.js';
 import { stripAccents, normalizeForMatch } from './helpers.js';
+import { normalizeIban } from './normalize.js';
 import { audit } from './audit.js';
 import { scheduleSave } from './storage.js';
 
@@ -66,6 +67,12 @@ const COLUMN_ALIASES = {
   status: ['status', 'κατάσταση', 'κατασταση', 'state'],
   country: ['country', 'χώρα', 'χωρα', 'χώρ', 'χωρ'],
   vat_full: ['vat full', 'vat_full', 'αριθμός μητρώου φπα', 'αριθμος μητρωου φπα'],
+  // SAP Vendor Master enrichment (Phase 3) — all optional, never required
+  iban: ['iban', 'ιβαν', 'bank account', 'τραπεζικός λογαριασμός'],
+  company_code: ['company code', 'company_code', 'εταιρεία sap', 'κωδικός εταιρείας', 'bukrs'],
+  payment_terms: ['payment terms', 'payment_terms', 'όροι πληρωμής', 'οροι πληρωμης', 'zterm'],
+  reconciliation_account: ['reconciliation account', 'reconciliation_account', 'λογαριασμός συμφωνίας', 'akont'],
+  active: ['active', 'ενεργός', 'ενεργος', 'is_active'],
 };
 
 export function resolveColumns(sampleRow) {
@@ -86,7 +93,138 @@ export function resolveColumns(sampleRow) {
     status: find(COLUMN_ALIASES.status),
     country: find(COLUMN_ALIASES.country),
     vat_full: find(COLUMN_ALIASES.vat_full),
+    iban: find(COLUMN_ALIASES.iban),
+    company_code: find(COLUMN_ALIASES.company_code),
+    payment_terms: find(COLUMN_ALIASES.payment_terms),
+    reconciliation_account: find(COLUMN_ALIASES.reconciliation_account),
+    active: find(COLUMN_ALIASES.active),
   };
+}
+
+/** Extract & normalize one vendor-master row's fields — shared by the commit
+ *  path (importSupplierRows) and the pre-commit validation preview
+ *  (analyzeVendorMasterImport) so both agree on what a row means. */
+function extractVendorRowFields(row, cols) {
+  const country = cols.country ? String(row[cols.country] || '').trim().toUpperCase() : '';
+  const sapCode = cols.sap ? String(row[cols.sap] || '').trim() : '';
+  const name = cols.name ? String(row[cols.name] || '').trim() : '';
+  const vatCol = cols.vat_full ? row[cols.vat_full] : (cols.afm ? row[cols.afm] : '');
+  const { afm, full_vat } = extractAfmFromVat(vatCol, country, cols.afm ? row[cols.afm] : '');
+
+  let identifier = afm;
+  if (country === 'GR' && identifier && identifier.length === 8) identifier = '0' + identifier;
+
+  const iban = cols.iban ? (normalizeIban(row[cols.iban]).normalizedValue || null) : null;
+  const companyCode = cols.company_code ? (String(row[cols.company_code] || '').trim() || null) : null;
+  const paymentTerms = cols.payment_terms ? (String(row[cols.payment_terms] || '').trim() || null) : null;
+  const reconciliationAccount = cols.reconciliation_account
+    ? (String(row[cols.reconciliation_account] || '').trim() || null) : null;
+  const status = cols.status
+    ? (String(row[cols.status] || 'active').trim().toLowerCase() || 'active')
+    : 'active';
+  const active = cols.active
+    ? /^(1|true|yes|y|ναι|ενεργ)/i.test(String(row[cols.active] || '').trim())
+    : status === 'active';
+
+  return {
+    country, sapCode, name, afm: identifier, vat_full: full_vat,
+    iban, companyCode, paymentTerms, reconciliationAccount, status, active,
+  };
+}
+
+/**
+ * Pre-commit validation pass for a vendor-master import (Phase 3). Does NOT
+ * touch state.suppliers — purely a report so the user can review what would
+ * happen (new rows, updates with a field-level diff, duplicates, missing
+ * vendor codes, duplicate VAT/IBAN) before anything is overwritten.
+ */
+export function analyzeVendorMasterImport(rows) {
+  const report = {
+    totalRows: rows.length,
+    validRows: 0,
+    invalidRows: 0,
+    duplicates: 0,
+    missingVendorCodes: 0,
+    duplicateVat: [],
+    duplicateIban: [],
+    entries: [],
+    error: null,
+  };
+  if (!rows.length) { report.error = 'Δεν βρέθηκαν γραμμές'; return report; }
+
+  const cols = resolveColumns(rows[0]);
+  if (!cols.sap && !cols.afm) {
+    report.invalidRows = rows.length;
+    report.error = 'Δεν βρέθηκαν οι στήλες ΑΦΜ ή SAP Vendor Code.';
+    return report;
+  }
+
+  const seenVatInBatch = new Map();
+  const seenIbanInBatch = new Map();
+  const seenDedupKeys = new Set();
+
+  rows.forEach((row, i) => {
+    const f = extractVendorRowFields(row, cols);
+    const rowIndex = i + 2; // +1 header, +1 1-indexed
+    const entry = {
+      rowIndex, sapVendorCode: f.sapCode || null, name: f.name || null,
+      status: 'new', reasons: [], changes: [],
+    };
+
+    if (!f.afm && !f.sapCode) { entry.status = 'invalid'; entry.reasons.push('Λείπει και ΑΦΜ και SAP Vendor Code'); }
+    if (!f.name) { entry.status = 'invalid'; entry.reasons.push('Λείπει επωνυμία'); }
+    if (!f.sapCode) report.missingVendorCodes++;
+
+    const dedupKey = f.sapCode || f.afm;
+    if (entry.status !== 'invalid' && dedupKey) {
+      if (seenDedupKeys.has(dedupKey)) {
+        entry.status = 'duplicate';
+        entry.reasons.push('Διπλή εγγραφή μέσα στο ίδιο αρχείο');
+        report.duplicates++;
+      } else {
+        seenDedupKeys.add(dedupKey);
+      }
+    }
+
+    if (f.afm) seenVatInBatch.set(f.afm, [...(seenVatInBatch.get(f.afm) || []), rowIndex]);
+    if (f.iban) seenIbanInBatch.set(f.iban, [...(seenIbanInBatch.get(f.iban) || []), rowIndex]);
+
+    const existing = state.suppliers.find(s =>
+      (f.afm && s.afm === f.afm) || (f.sapCode && s.sap_vendor_code === f.sapCode)
+    );
+    if (existing) {
+      entry.matchedExistingId = existing.id;
+      if (entry.status === 'new') entry.status = 'update';
+      const compareFields = [
+        ['name', 'name'], ['sap_vendor_code', 'sapCode'], ['country', 'country'],
+        ['iban', 'iban'], ['company_code', 'companyCode'],
+        ['payment_terms', 'paymentTerms'], ['reconciliation_account', 'reconciliationAccount'],
+      ];
+      for (const [existingKey, newKey] of compareFields) {
+        const oldVal = existing[existingKey] || null;
+        const newVal = f[newKey] || null;
+        if (newVal != null && newVal !== oldVal) entry.changes.push({ field: existingKey, from: oldVal, to: newVal });
+      }
+
+      // Cross-check: does this row's VAT/IBAN collide with a *different* existing vendor?
+      if (f.afm) {
+        const clash = state.suppliers.find(s => s.afm === f.afm && s.id !== existing.id);
+        if (clash) entry.reasons.push(`ΑΦΜ ήδη σε άλλον SAP vendor (${clash.sap_vendor_code})`);
+      }
+    } else if (f.afm) {
+      const clash = state.suppliers.find(s => s.afm === f.afm);
+      if (clash) entry.reasons.push(`ΑΦΜ ήδη σε άλλον SAP vendor (${clash.sap_vendor_code})`);
+    }
+
+    if (entry.status === 'new' || entry.status === 'update') report.validRows++;
+    else if (entry.status === 'invalid') report.invalidRows++;
+    report.entries.push(entry);
+  });
+
+  for (const [vat, idxs] of seenVatInBatch) if (idxs.length > 1) report.duplicateVat.push({ vat, rows: idxs });
+  for (const [iban, idxs] of seenIbanInBatch) if (idxs.length > 1) report.duplicateIban.push({ iban, rows: idxs });
+
+  return report;
 }
 
 /**
@@ -190,14 +328,10 @@ export function importSupplierRows(rows) {
   const seenInThisImport = new Set();
 
   rows.forEach((row, i) => {
-    const country = cols.country ? String(row[cols.country] || '').trim().toUpperCase() : '';
-    const sapCode = cols.sap ? String(row[cols.sap] || '').trim() : '';
-    const name = cols.name ? String(row[cols.name] || '').trim() : '';
-    const vatCol = cols.vat_full ? row[cols.vat_full] : (cols.afm ? row[cols.afm] : '');
-    const { afm, full_vat } = extractAfmFromVat(vatCol, country, cols.afm ? row[cols.afm] : '');
+    const f = extractVendorRowFields(row, cols);
+    const { country, sapCode, name } = f;
+    let identifier = f.afm;
 
-    // For Greek AFM, expect exactly 9 digits and prefer valid MOD-11
-    let identifier = afm;
     if (!identifier && !sapCode) {
       result.skipped++;
       result.errors.push(`Γραμμή ${i + 2}: λείπει και AFM και SAP code`);
@@ -216,18 +350,9 @@ export function importSupplierRows(rows) {
     }
     seenInThisImport.add(dedupKey);
 
-    // Zero-pad Greek AFM to 9 digits if 8
-    if (country === 'GR' && identifier && identifier.length === 8) {
-      identifier = '0' + identifier;
-    }
-
     // Folder path — πάντα με format {SAP_CODE}-{SHORT_NAME}
     // Αγνοούμε τα user-provided folder paths για συνέπεια
     const folder = buildSupplierFolder(sapCode || identifier, name);
-
-    const status = cols.status
-      ? (String(row[cols.status] || 'active').trim().toLowerCase() || 'active')
-      : 'active';
 
     // Match existing by AFM OR SAP code
     const existing = state.suppliers.find(s =>
@@ -239,10 +364,15 @@ export function importSupplierRows(rows) {
       sap_vendor_code: sapCode,
       name,
       country: country || '',
-      vat_full: full_vat || '',
+      vat_full: f.vat_full || '',
+      iban: f.iban || (existing?.iban ?? ''),
+      company_code: f.companyCode || (existing?.company_code ?? ''),
+      payment_terms: f.paymentTerms || (existing?.payment_terms ?? ''),
+      reconciliation_account: f.reconciliationAccount || (existing?.reconciliation_account ?? ''),
+      active: f.active,
       name_normalized: normalizeForMatch(name),
       folder_path: folder,
-      status,
+      status: f.status,
     };
 
     if (existing) {
@@ -304,7 +434,7 @@ export function renderSuppliers() {
   }
   rows.sort((a, b) => a.name.localeCompare(b.name));
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="5" class="empty-row">Δεν βρέθηκαν προμηθευτές.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-row">Δεν βρέθηκαν προμηθευτές.</td></tr>';
     return;
   }
   for (const s of rows) {
@@ -313,6 +443,8 @@ export function renderSuppliers() {
       <td class="mono">${s.afm}</td>
       <td class="mono">${escapeHtml(s.sap_vendor_code)}</td>
       <td>${escapeHtml(s.name)}</td>
+      <td class="mono">${escapeHtml(s.iban || '—')}</td>
+      <td class="mono">${escapeHtml(s.company_code || '—')}</td>
       <td class="mono">${escapeHtml(s.folder_path)}</td>
       <td><span class="status-pill status-${s.status}">${s.status}</span></td>
     `;
@@ -321,6 +453,54 @@ export function renderSuppliers() {
 }
 
 // ═══════════════════════════════════════════════════════════
+
+let _pendingImportRows = null;
+
+/** Render the pre-commit validation report (Phase 3) — never overwrites
+ *  anything until the user explicitly confirms. */
+function renderVendorMasterAnalysis(analysis) {
+  const box = $('#import-summary');
+  box.hidden = false;
+  box.classList.toggle('has-errors', analysis.invalidRows > 0 || !!analysis.error);
+
+  if (analysis.error) {
+    box.innerHTML = `<strong>Σφάλμα:</strong> ${escapeHtml(analysis.error)}`;
+    return;
+  }
+
+  const updates = analysis.entries.filter((e) => e.status === 'update' && e.changes.length);
+  const parts = [
+    '<strong>Προεπισκόπηση εισαγωγής SAP Vendor Master</strong>',
+    `Σύνολο γραμμών: ${analysis.totalRows}`,
+    `Έγκυρες: ${analysis.validRows}`,
+    `Άκυρες: ${analysis.invalidRows}`,
+    `Διπλότυπα στο αρχείο: ${analysis.duplicates}`,
+    `Χωρίς SAP Vendor Code: ${analysis.missingVendorCodes}`,
+  ];
+  let html = `<div>${parts.join(' · ')}</div>`;
+
+  if (analysis.duplicateVat.length) {
+    html += `<div class="warn">⚠ Διπλό ΑΦΜ μέσα στο αρχείο: ${analysis.duplicateVat.map((d) => `${escapeHtml(d.vat)} (γραμμές ${d.rows.join(', ')})`).join('; ')}</div>`;
+  }
+  if (analysis.duplicateIban.length) {
+    html += `<div class="warn">⚠ Διπλό IBAN μέσα στο αρχείο: ${analysis.duplicateIban.map((d) => `${escapeHtml(d.iban)} (γραμμές ${d.rows.join(', ')})`).join('; ')}</div>`;
+  }
+  const invalidEntries = analysis.entries.filter((e) => e.status === 'invalid').slice(0, 10);
+  if (invalidEntries.length) {
+    html += `<ul style="margin-top:6px;padding-left:20px;font-size:12px">${invalidEntries.map((e) => `<li>Γραμμή ${e.rowIndex}: ${escapeHtml(e.reasons.join(', '))}</li>`).join('')}</ul>`;
+  }
+  if (updates.length) {
+    html += `<div style="margin-top:6px"><strong>Αλλαγές σε υπάρχοντες προμηθευτές (${updates.length}):</strong></div>`;
+    html += `<ul style="padding-left:20px;font-size:12px">${updates.slice(0, 15).map((e) =>
+      `<li>${escapeHtml(e.sapVendorCode || e.name || 'γραμμή ' + e.rowIndex)}: ${e.changes.map((c) => `${escapeHtml(c.field)} "${escapeHtml(c.from ?? '—')}" → "${escapeHtml(c.to)}"`).join(', ')}</li>`
+    ).join('')}</ul>`;
+  }
+  html += `<div style="margin-top:8px;display:flex;gap:8px">
+    <button class="btn btn-primary" id="btn-confirm-vendor-import" ${analysis.validRows ? '' : 'disabled'}>✓ Επιβεβαίωση Εισαγωγής (${analysis.validRows})</button>
+    <button class="btn btn-secondary" id="btn-cancel-vendor-import">Άκυρο</button>
+  </div>`;
+  box.innerHTML = html;
+}
 
 export function initSuppliers() {
   $('#supplier-search')?.addEventListener('input', debounce(renderSuppliers, 200));
@@ -343,17 +523,30 @@ export function initSuppliers() {
       let rows;
       if (name.endsWith('.xlsx') || name.endsWith('.xls')) rows = await parseXLSX(file);
       else rows = parseCSVToRows(await file.text());
-      const result = importSupplierRows(rows);
-      showImportSummary(result);
-      audit('supplier_import', result.errors.length ? 'warning' : 'success',
-        `imported=${result.imported} updated=${result.updated} skipped=${result.skipped}`,
-        { actor: 'user', details: result });
-      renderSuppliers();
-      toast(`+${result.imported} νέοι, ${result.updated} ενημερώθηκαν`, 'ok');
+      _pendingImportRows = rows;
+      renderVendorMasterAnalysis(analyzeVendorMasterImport(rows));
     } catch (err) {
       toast(`Σφάλμα εισαγωγής: ${err.message}`, 'err');
       console.error(err);
     }
     e.target.value = '';
+  });
+  // Event delegation — #import-summary's innerHTML is rebuilt on every preview/summary render
+  $('#import-summary')?.addEventListener('click', (e) => {
+    if (e.target.id === 'btn-confirm-vendor-import') {
+      if (!_pendingImportRows) return;
+      const result = importSupplierRows(_pendingImportRows);
+      _pendingImportRows = null;
+      showImportSummary(result);
+      audit('supplier_import', result.errors.length ? 'warning' : 'success',
+        `imported=${result.imported} updated=${result.updated} skipped=${result.skipped}`,
+        { actor: 'user', details: result });
+      renderSuppliers();
+      scheduleSave();
+      toast(`+${result.imported} νέοι, ${result.updated} ενημερώθηκαν`, 'ok');
+    } else if (e.target.id === 'btn-cancel-vendor-import') {
+      _pendingImportRows = null;
+      $('#import-summary').hidden = true;
+    }
   });
 }

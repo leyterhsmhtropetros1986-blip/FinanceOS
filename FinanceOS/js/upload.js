@@ -32,6 +32,7 @@ import { appendTimelineEvent, renderTimelineHtml } from './timeline.js';
 import { boostSupplierFromLearning, recordCorrection } from './ocr-learning.js';
 import { mountVirtualPreview, isVirtualBundle, releasePdfDoc } from './preview-virtual.js';
 import { applyFieldValidation, clearFieldValidation, bindFieldValidationClear } from './field-validation.js';
+import { renderSapPrepPanel } from './sap-prep-ui.js';
 import {
   initDraftAutoSave, scheduleReviewDraftSave, restoreDraftIfAny,
   clearReviewDraft, listPendingDrafts,
@@ -51,10 +52,20 @@ function assignFinancialFields(invoice, extracted, result) {
     total_amount: extracted.total_amount,
     currency: extracted.currency || 'EUR',
     vat_rate: extracted.vat_rate,
+    vat_breakdown: extracted.vat_breakdown || [],
     confidence_total: extracted.confidence_total,
     confidence_net: extracted.confidence_net,
     confidence_vat: extracted.confidence_vat,
     ocr_processing_ms: result?.processingMs || invoice.ocr_processing_ms || null,
+    // SAP-preparation inputs (Phases 1-10) — additive, does not change any
+    // existing archive/matching behavior above.
+    purchase_order: extracted.purchase_order || null,
+    iban: extracted.iban || null,
+    supplier_country: extracted.supplier_country || null,
+    supplier_address: extracted.supplier_address || null,
+    delivery_note: extracted.delivery_note || null,
+    payment_terms: extracted.payment_terms || null,
+    payment_reference: extracted.payment_reference || null,
   });
 }
 
@@ -1000,7 +1011,19 @@ export async function retryAiForCurrent() {
       setCachedAi(hash, aiPayload);
     }
     const base = normalizeOcrResult(upload.result || {}, upload.file);
-    const merged = { ...base, extracted: { ...base.extracted, ...aiPayload.extracted }, engine: `${base.engine} + AI` };
+    // Record real per-field provenance for whichever keys the AI pass actually
+    // supplied a non-null value for — never claim AI provenance for fields it
+    // left untouched (those keep their original OCR/PDF-text source).
+    const aiFieldSources = { ...(base.extracted._fieldSources || {}) };
+    for (const [k, v] of Object.entries(aiPayload.extracted || {})) {
+      if (v == null || k.startsWith('confidence_') || k.startsWith('_')) continue;
+      aiFieldSources[k] = 'claude_vision';
+    }
+    const merged = {
+      ...base,
+      extracted: { ...base.extracted, ...aiPayload.extracted, _fieldSources: aiFieldSources },
+      engine: `${base.engine} + AI`,
+    };
     upload.result = merged;
     applyOcrResultToReview(merged, upload.file, invoice);
     setUploadStatus('ready');
@@ -1142,6 +1165,7 @@ export function populateReviewFromOCR(result, file, invoice) {
   populateSAPDropdown(ext.sap_doc_candidates, ext.sap_doc_number);
   renderSAPCandidates(ext.sap_doc_candidates);
   renderSupplierCandidates(all);
+  renderSapPrepPanel(invoice);
 
   const avg = meanConfidence(ext);
   const meanEl = $('#mean-confidence');

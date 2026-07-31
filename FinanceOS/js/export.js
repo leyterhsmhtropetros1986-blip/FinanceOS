@@ -3,6 +3,7 @@ import { state } from './state.js';
 import { toast } from './utils.js';
 import { audit } from './audit.js';
 import { getInvoiceTotal } from './analytics.js';
+import { buildSapReadyRecord, SAP_PREP_STATUS } from './sap-preparation.js';
 
 function invoiceToRow(inv) {
   const supplier = state.suppliers.find(s => s.id === inv.supplier_id);
@@ -106,6 +107,86 @@ export async function exportInvoicesToPdfZip(invoiceIds) {
   setTimeout(() => URL.revokeObjectURL(url), 5000);
   toast(`✓ Εξήχθηκαν ${added} PDF σε ZIP`, 'ok');
   audit('export', 'success', `PDF ZIP export: ${added} αρχεία`, { actor: state.currentUser || 'system' });
+}
+
+/**
+ * SAP-ready export (Phase 15) — a FinanceOS intermediate dataset for
+ * accountants to review before any real SAP posting exists. This is
+ * explicitly NOT an official SAP import format (no BAPI/IDoc structure,
+ * no encoding guarantees SAP itself would require) — the sheet says so.
+ * Only ever reads state; never calls sap-connector.js or any network API.
+ */
+function sapReadyRow(invoice, result) {
+  const { sapPrep } = result;
+  return {
+    'SAP Vendor': sapPrep.sapVendorCode || '',
+    'Vendor Name': result.supplierMatchStatus.sapVendorName || '',
+    'Invoice Number': sapPrep.invoiceNumber || '',
+    'Invoice Date': sapPrep.invoiceDate || '',
+    'PO': sapPrep.poNumber || '',
+    'Net': sapPrep.netAmount ?? '',
+    'VAT': sapPrep.vatAmount ?? '',
+    'Gross': sapPrep.grossAmount ?? '',
+    'Currency': sapPrep.currency || '',
+    'Company Code': sapPrep.companyCode || '',
+    'Tax Code': sapPrep.taxCode || '',
+    'GL': sapPrep.glAccount || '',
+    'Cost Center': sapPrep.costCenter || '',
+    'Workflow': sapPrep.workflow || '',
+    'Validation Status': sapPrep.validationStatus || '',
+  };
+}
+
+/**
+ * @param {number[]|null} invoiceIds - restrict to this selection, or null for
+ *   every invoice currently SAP_READY.
+ */
+export function exportSapReadyInvoices(invoiceIds = null) {
+  if (typeof XLSX === 'undefined') { toast('SheetJS δεν φόρτωσε', 'err'); return; }
+
+  let candidates = state.invoices;
+  if (invoiceIds?.length) {
+    const idSet = new Set(invoiceIds);
+    candidates = candidates.filter((i) => idSet.has(i.id));
+  }
+
+  const rows = [];
+  const includedIds = [];
+  for (const inv of candidates) {
+    const result = buildSapReadyRecord(inv, {
+      suppliers: state.suppliers,
+      vendorMappings: state.vendorMappings,
+      allInvoices: state.invoices,
+    });
+    if (result.sapPreparationStatus !== SAP_PREP_STATUS.SAP_READY) continue;
+    rows.push(sapReadyRow(inv, result));
+    includedIds.push(inv.id);
+  }
+
+  if (!rows.length) {
+    toast('Δεν υπάρχουν SAP READY τιμολόγια για εξαγωγή', 'err');
+    return;
+  }
+
+  const ws = XLSX.utils.json_to_sheet(rows, { origin: 'A2' });
+  XLSX.utils.sheet_add_aoa(ws, [[
+    'ΠΡΟΣΟΧΗ: Ενδιάμεσο dataset FinanceOS — ΔΕΝ είναι επίσημη μορφή εισαγωγής SAP. Δεν έχει γίνει καταχώρηση στο SAP.',
+  ]], { origin: 'A1' });
+  ws['!cols'] = Object.keys(rows[0]).map((c) => ({
+    wch: Math.min(40, Math.max(c.length + 2, ...rows.map((r) => String(r[c] ?? '').length + 2))),
+  }));
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'SAP-Ready (FinanceOS)');
+
+  const now = new Date();
+  const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+  XLSX.writeFile(wb, `sap_ready_financeos_${ts}.xlsx`);
+  toast(`✓ Εξήχθησαν ${rows.length} SAP-ready εγγραφές (ενδιάμεσο FinanceOS dataset)`, 'ok');
+  audit('sap_export', 'success', `SAP-ready export: ${rows.length} τιμολόγια`, {
+    actor: state.currentUser || 'system',
+    details: { invoiceIds: includedIds },
+  });
 }
 
 // ═══════════════════════════════════════════════════════════

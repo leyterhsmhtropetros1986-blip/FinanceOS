@@ -27,6 +27,7 @@ export async function saveStateToArchiveRoot() {
     const metaDir = await state.archiveRoot.handle.getDirectoryHandle('.parastatika', { create: true });
     await writeJsonToDir(metaDir, 'suppliers.json', state.suppliers);
     await writeJsonToDir(metaDir, 'invoices.json', state.invoices);
+    await writeJsonToDir(metaDir, 'vendor-mappings.json', state.vendorMappings);
     await writeJsonToDir(metaDir, 'audit.json', state.auditLogs.slice(0, 5000));
     await writeJsonToDir(metaDir, 'meta.json', {
       lastUpdated: new Date().toISOString(),
@@ -60,13 +61,14 @@ export async function loadStateFromArchiveRoot() {
   if (!state.archiveRoot.handle) return null;
   try {
     const metaDir = await state.archiveRoot.handle.getDirectoryHandle('.parastatika', { create: false });
-    const [suppliers, invoices, auditLogs, meta] = await Promise.all([
+    const [suppliers, invoices, vendorMappings, auditLogs, meta] = await Promise.all([
       readJsonFromDir(metaDir, 'suppliers.json'),
       readJsonFromDir(metaDir, 'invoices.json'),
+      readJsonFromDir(metaDir, 'vendor-mappings.json'),
       readJsonFromDir(metaDir, 'audit.json'),
       readJsonFromDir(metaDir, 'meta.json'),
     ]);
-    return { suppliers, invoices, auditLogs, meta };
+    return { suppliers, invoices, vendorMappings, auditLogs, meta };
   } catch (e) {
     console.log('No shared state in archive root (πρώτη χρήση)');
     return null;
@@ -92,6 +94,10 @@ export async function reloadFromShared() {
   if (Array.isArray(shared.invoices)) {
     state.invoices = shared.invoices;
     merged += shared.invoices.length;
+  }
+  if (Array.isArray(shared.vendorMappings)) {
+    state.vendorMappings = shared.vendorMappings;
+    merged += shared.vendorMappings.length;
   }
   if (Array.isArray(shared.auditLogs)) state.auditLogs = shared.auditLogs;
   if (shared.meta?.counters) {
@@ -220,6 +226,7 @@ export async function idbSaveState() {
       const s = tx.objectStore('kv');
       s.put(state.suppliers, 'suppliers');
       s.put(state.invoices, 'invoices');
+      s.put(state.vendorMappings, 'vendorMappings');
       s.put(state.auditLogs.slice(0, 2000), 'auditLogs');  // cap 2000
       s.put({ nextInvoiceId: state.nextInvoiceId, nextAuditId: state.nextAuditId }, 'counters');
       tx.oncomplete = () => res();
@@ -236,17 +243,19 @@ export async function idbLoadState() {
       Promise.all([
         idbKvGet(s, 'suppliers'),
         idbKvGet(s, 'invoices'),
+        idbKvGet(s, 'vendorMappings'),
         idbKvGet(s, 'auditLogs'),
         idbKvGet(s, 'counters'),
-      ]).then(([sup, inv, aud, cnt]) => {
+      ]).then(([sup, inv, vm, aud, cnt]) => {
         if (Array.isArray(sup) && sup.length) state.suppliers = sup;
         if (Array.isArray(inv)) state.invoices = inv;
+        if (Array.isArray(vm)) state.vendorMappings = vm;
         if (Array.isArray(aud)) state.auditLogs = aud;
         if (cnt) {
           state.nextInvoiceId = cnt.nextInvoiceId || state.nextInvoiceId;
           state.nextAuditId = cnt.nextAuditId || state.nextAuditId;
         }
-        res({ sup: sup?.length || 0, inv: inv?.length || 0, aud: aud?.length || 0 });
+        res({ sup: sup?.length || 0, inv: inv?.length || 0, vm: vm?.length || 0, aud: aud?.length || 0 });
       });
     });
   } catch (e) { console.warn('State load failed:', e); return null; }

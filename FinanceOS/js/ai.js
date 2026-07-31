@@ -52,6 +52,13 @@ ${ownAfmLine}
 - total_amount: Συνολικό ποσό (καθαρή + ΦΠΑ). Δεκαδικός με τελεία (πχ. 96.00). null αν δεν βρεθεί.
 - currency: 3-letter ISO code (πχ. "EUR", "USD", "GBP"). Default "EUR" για Ελληνικά τιμολόγια.
 - vat_rate: Συντελεστής ΦΠΑ % (πχ. 24 για 24%, 13, 6, 0). null αν άγνωστος.
+- supplier_country: 2-letter ISO χώρας προμηθευτή (πχ. "GR", "IT", "DE"). null αν άγνωστη.
+- supplier_address: Πλήρης διεύθυνση έδρας προμηθευτή όπως ακριβώς εμφανίζεται. null αν δεν βρεθεί.
+- iban: IBAN τραπεζικού λογαριασμού προμηθευτή, όπως ακριβώς γράφεται. null αν δεν υπάρχει.
+- purchase_order: Αριθμός εντολής αγοράς / PO. null αν δεν υπάρχει.
+- delivery_note: Αριθμός δελτίου αποστολής. null αν δεν υπάρχει.
+- payment_terms: Όροι πληρωμής όπως γράφονται (πχ. "30 ημέρες", "Net 30"). null αν δεν υπάρχουν.
+- payment_reference: Αιτιολογία/κωδικός πληρωμής. null αν δεν υπάρχει.
 - confidence: 0-100 για κάθε πεδίο.
 
 Επίστρεψε ΜΟΝΟ raw JSON χωρίς κανένα άλλο κείμενο, χωρίς \`\`\`json fences, χωρίς εξηγήσεις:
@@ -70,10 +77,19 @@ ${ownAfmLine}
       "total_amount": 96.00,
       "currency": "EUR",
       "vat_rate": 24,
+      "supplier_country": "GR",
+      "supplier_address": null,
+      "iban": null,
+      "purchase_order": null,
+      "delivery_note": null,
+      "payment_terms": null,
+      "payment_reference": null,
       "confidence": {
         "afm_supplier": 99, "invoice_number": 99, "invoice_date": 99,
         "sap_doc_number": 85, "supplier_name": 99,
-        "net_amount": 99, "vat_amount": 99, "total_amount": 99
+        "net_amount": 99, "vat_amount": 99, "total_amount": 99,
+        "supplier_country": 90, "supplier_address": 0, "iban": 0,
+        "purchase_order": 0, "delivery_note": 0, "payment_terms": 0, "payment_reference": 0
       }
     }
   ]
@@ -227,6 +243,13 @@ export async function callClaudeAPI(contentBlock, canvases, onProgress) {
       total_amount: typeof inv.total_amount === 'number' ? inv.total_amount : null,
       currency: inv.currency || 'EUR',
       vat_rate: typeof inv.vat_rate === 'number' ? inv.vat_rate : null,
+      supplier_country: inv.supplier_country || null,
+      supplier_address: inv.supplier_address || null,
+      iban: inv.iban || null,
+      purchase_order: inv.purchase_order || null,
+      delivery_note: inv.delivery_note || null,
+      payment_terms: inv.payment_terms || null,
+      payment_reference: inv.payment_reference || null,
       page_start: inv.page_start || 1,
       page_end: inv.page_end || 1,
       confidence_afm: conf.afm_supplier ?? 0,
@@ -235,6 +258,13 @@ export async function callClaudeAPI(contentBlock, canvases, onProgress) {
       confidence_sap_doc: conf.sap_doc_number ?? 0,
       confidence_supplier: conf.supplier_name ?? 0,
       confidence_amount: conf.total_amount ?? conf.net_amount ?? 0,
+      confidence_country: conf.supplier_country ?? 0,
+      confidence_address: conf.supplier_address ?? 0,
+      confidence_iban: conf.iban ?? 0,
+      confidence_po: conf.purchase_order ?? 0,
+      confidence_delivery_note: conf.delivery_note ?? 0,
+      confidence_payment_terms: conf.payment_terms ?? 0,
+      confidence_payment_reference: conf.payment_reference ?? 0,
       sap_doc_candidates: inv.sap_doc_number ? [{
         value: inv.sap_doc_number,
         confidence: conf.sap_doc_number ?? 0,

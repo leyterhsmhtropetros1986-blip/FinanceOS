@@ -20,6 +20,11 @@
 .status-inactive { background: var(--bg-sunken); color: var(--text-muted); }
 .status-active { background: var(--ok-soft); color: var(--ok); border-color: rgba(16,104,76,0.2); }
 
+/* ─── SAP vendor grouping (Phase 13) ────────────────────────── */
+.vendor-group-row td { background: var(--surface-alt); font-size: 12px; padding: 10px 16px; }
+.vendor-group-child td { padding-left: 28px; }
+.vendor-group-currency { color: var(--text-muted); }
+
 /* ─── Audit log ─────────────────────────────────────────── */
 .audit-list { display: flex; flex-direction: column; gap: 6px; }
 .audit-item { background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--text-subtle); border-radius: var(--r-sm); padding: 10px 14px; display: grid; grid-template-columns: 130px 130px 1fr 140px; gap: 12px; align-items: center; font-size: 12px; }

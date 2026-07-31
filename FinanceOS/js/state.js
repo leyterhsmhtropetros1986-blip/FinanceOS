@@ -4,6 +4,9 @@ export const state = {
   suppliers: [],
   invoices: [],
   auditLogs: [],
+  // Human-approved SAP vendor mappings (Phase 6) — deterministic, reviewable,
+  // disableable. Never an ML model; see vendor-mappings.js.
+  vendorMappings: [],
   currentUpload: null,
   currentInvoiceId: null,
   nextInvoiceId: 1,
