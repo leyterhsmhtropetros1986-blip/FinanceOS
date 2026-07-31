@@ -94,3 +94,18 @@ export function sapLengthBoost(number) {
 }
 
 // ═══════════════════════════════════════════════════════════
+
+// HANDWRITING OCR CORRECTION — χειρόγραφα ψηφία συχνά διαβάζονται λάθος
+// ═══════════════════════════════════════════════════════════
+/** Small, deliberately conservative confusable map (block-capital digits
+ *  vs. visually similar letters) to avoid corrupting unrelated tokens. */
+const DIGIT_CONFUSABLES = { O: '0', o: '0', I: '1', l: '1', i: '1', S: '5', s: '5', B: '8' };
+
+/** Retry a handwritten-looking token with common OCR digit/letter mix-ups
+ *  corrected (O/0, I/l/1, S/5, B/8) — Tesseract frequently misreads pen
+ *  handwriting this way even when printed text nearby reads cleanly. */
+export function normalizeConfusableDigits(token) {
+  return String(token || '').replace(/[OoIilSsB]/g, (ch) => DIGIT_CONFUSABLES[ch] || ch);
+}
+
+// ═══════════════════════════════════════════════════════════

@@ -3,7 +3,7 @@ import { state } from './state.js';
 import {
   stripAccents, validateAfmChecksum, similarity, sapPrefixBoost, sapLengthBoost,
   sapPrefixLabel, isValidSapDocNumber, hasAllowedSapPrefix, SAP_HANDWRITTEN_PREFIXES,
-  normalizeForMatch,
+  normalizeForMatch, normalizeConfusableDigits,
 } from './helpers.js';
 import { extractExtendedFields } from './field-extractors.js';
 import { fuzzyFindSupplierInText } from './ocr-confidence.js';
@@ -133,10 +133,33 @@ export async function renderToCanvases(file, onProgress) {
 // FIELD EXTRACTORS — τρέχουν σε πραγματικό OCR text
 // ═══════════════════════════════════════════════════════════
 const AFM_KEYWORDS = ['ΑΦΜ', 'Α.Φ.Μ', 'AFM', 'VAT', 'TAX ID', 'TIN'];
-const INVOICE_KEYWORDS = [
-  'ΑΡΙΘΜΟΣ ΤΙΜΟΛΟΓΙΟΥ', 'ΑΡ. ΤΙΜΟΛΟΓΙΟΥ', 'ΤΙΜΟΛΟΓΙΟ', 'INVOICE NO', 'INVOICE #', 'INVOICE NUMBER',
-  'ΠΑΡΑΣΤΑΤΙΚΟ', 'Τ.Δ.Α', 'Δ.Α.Τ', 'INV NO', 'INVOICE', 'DEBIT NOTE', 'CREDIT NOTE',
-  'ΤΙΜΟΛΟΓΙΟ ΑΞΙΑΣ', 'ΑΡΙΘΜΟΣ', 'NO.', 'NUMBER',
+/**
+ * Ordered by reliability, not by document position: a highly-specific label
+ * ("Αριθμός Τιμολογίου") almost always names the real invoice number, while
+ * a bare "Τιμολόγιο"/"Αριθμός" can just as easily label an unrelated
+ * reference elsewhere on the page (a case/shipment section referencing a
+ * *different* document's number, a file number, etc). Confidence reflects
+ * that, so a later but more specific match can still win over an earlier,
+ * vaguer one — see extractInvoiceNumber().
+ */
+const INVOICE_KEYWORDS_BY_SPECIFICITY = [
+  { kw: 'ΑΡΙΘΜΟΣ ΤΙΜΟΛΟΓΙΟΥ', conf: 95 },
+  { kw: 'ΑΡ. ΤΙΜΟΛΟΓΙΟΥ', conf: 95 },
+  { kw: 'INVOICE NUMBER', conf: 95 },
+  { kw: 'INVOICE NO', conf: 95 },
+  { kw: 'INVOICE #', conf: 95 },
+  { kw: 'INV NO', conf: 93 },
+  { kw: 'ΤΙΜΟΛΟΓΙΟ ΑΞΙΑΣ', conf: 90 },
+  { kw: 'ΤΙΜΟΛΟΓΙΟ', conf: 85 },
+  { kw: 'INVOICE', conf: 82 },
+  { kw: 'ΠΑΡΑΣΤΑΤΙΚΟ', conf: 80 },
+  { kw: 'DEBIT NOTE', conf: 85 },
+  { kw: 'CREDIT NOTE', conf: 85 },
+  { kw: 'Τ.Δ.Α', conf: 78 },
+  { kw: 'Δ.Α.Τ', conf: 78 },
+  { kw: 'ΑΡΙΘΜΟΣ', conf: 65 },
+  { kw: 'NO.', conf: 60 },
+  { kw: 'NUMBER', conf: 60 },
 ];
 const DATE_KEYWORDS = ['ΗΜΕΡΟΜΗΝΙΑ', 'ΗΜ/ΝΙΑ', 'DATE', 'ΕΚΔΟΣΗ'];
 const SAP_KEYWORDS = [
@@ -235,17 +258,22 @@ export function extractInvoiceNumber(fullText) {
     }
   }
 
-  for (const kw of INVOICE_KEYWORDS) {
+  const candidateRe = /([A-ZΑ-Ω0-9][A-ZΑ-Ω0-9/\-.]{2,19})/g;
+  for (const { kw, conf } of INVOICE_KEYWORDS_BY_SPECIFICITY) {
     let idx = 0;
     while ((idx = upper.indexOf(kw, idx)) !== -1) {
       let win = upper.slice(idx + kw.length, idx + kw.length + 60);
       win = win.replace(/^[\s:.\-#Νο]+/, '');
-      const m = win.match(/([A-ZΑ-Ω0-9][A-ZΑ-Ω0-9/\-.]{2,19})/);
-      if (m) {
+      // Keep scanning tokens in the window instead of giving up after the
+      // first one — a label is often followed by descriptive words before
+      // the actual number (e.g. "ΤΙΜΟΛΟΓΙΟ ΠΑΡΟΧΗΣ ΥΠΗΡΕΣΙΩΝ Β 918").
+      candidateRe.lastIndex = 0;
+      let m;
+      while ((m = candidateRe.exec(win)) !== null) {
         const candidate = m[1];
         if (/\d/.test(candidate) && !(candidate.length === 9 && /^\d+$/.test(candidate))) {
-          const conf = 92;
           if (conf > bestConf) { best = candidate; bestConf = conf; }
+          break;
         }
       }
       idx += kw.length;
@@ -272,11 +300,16 @@ export function extractDate(fullText) {
     return dt;
   };
 
-  // Pass 1: near keyword
+  // Pass 1: near keyword. Window is deliberately wide (not just a few words) —
+  // in table-formatted invoices ("Είδος Παραστατικού | Σειρά | Αριθμός |
+  // Ημερομηνία | Νόμισμα") the column header and its value can end up 50+
+  // characters apart once OCR linearizes the row, well past a narrow window;
+  // too narrow a window makes this pass fail silently and fall through to
+  // Pass 2, which then grabs the wrong date from anywhere else in the page.
   for (const kw of DATE_KEYWORDS) {
     let idx = 0;
     while ((idx = upper.indexOf(kw, idx)) !== -1) {
-      const win = upper.slice(idx + kw.length, idx + kw.length + 40);
+      const win = upper.slice(idx + kw.length, idx + kw.length + 100);
       for (const pat of patterns) {
         const m = win.match(pat);
         if (m) {
@@ -327,6 +360,23 @@ export function extractSapDocCandidates(pages, fullText) {
     });
   }
 
+  // Pass 0b: same, but with common handwriting OCR mix-ups corrected
+  // (O/0, I/l/1, S/5, B/8) — a single misread character elsewhere would
+  // otherwise silently drop an otherwise-valid handwritten number.
+  const HANDWRITING_TOKEN_RE = /\b([0-9OoIilSsB]{6,12})\b/g;
+  for (const m of (fullText || '').matchAll(HANDWRITING_TOKEN_RE)) {
+    const raw = m[1];
+    if (/^\d+$/.test(raw)) continue; // already a pure-digit token, covered by Pass 0
+    const corrected = normalizeConfusableDigits(raw);
+    if (corrected !== raw && /^\d+$/.test(corrected)) {
+      addCandidate(corrected, 60 + sapLengthBoost(corrected), {
+        source: 'handwritten_prefix_corrected',
+        page: 1,
+        reason: `χειρόγραφο prefix ${sapPrefixLabel(corrected)} (διόρθωση OCR O/I/S/B από "${raw}")`,
+      });
+    }
+  }
+
   // Pass 1: keyword-adjacent numbers in full text (works for PDF text layer)
   const upperFull = stripAccents((fullText || '').toUpperCase());
   for (const kw of SAP_KEYWORDS) {
@@ -372,18 +422,35 @@ export function extractSapDocCandidates(pages, fullText) {
 
     // Region scan: top area (handwritten SAP doc often top-right or top-center)
     for (const wb of page.words) {
-      const digits = wb.text.replace(/\D/g, '');
-      if (!isValidSapDocNumber(digits)) continue;
       if (wb.y > page.height * 0.45) continue;
       const regionBonus = wb.x >= page.width * 0.45 ? 12 : 6;
-      const score = Math.round(wb.confidence * 0.45)
-        + sapPrefixBoost(digits)
-        + sapLengthBoost(digits)
-        + regionBonus;
-      addCandidate(digits, score, {
-        source: 'region_scan', page: page.page_number,
-        reason: `top region, ocr_conf ${wb.confidence}, prefix ${sapPrefixLabel(digits)}`,
-      });
+
+      const digits = wb.text.replace(/\D/g, '');
+      if (isValidSapDocNumber(digits)) {
+        const score = Math.round(wb.confidence * 0.45)
+          + sapPrefixBoost(digits)
+          + sapLengthBoost(digits)
+          + regionBonus;
+        addCandidate(digits, score, {
+          source: 'region_scan', page: page.page_number,
+          reason: `top region, ocr_conf ${wb.confidence}, prefix ${sapPrefixLabel(digits)}`,
+        });
+        continue;
+      }
+
+      // Handwriting is frequently mis-OCR'd letter-for-digit (O/0, I/l/1,
+      // S/5, B/8) — retry this word with the correction before dropping it.
+      const corrected = normalizeConfusableDigits(wb.text).replace(/\D/g, '');
+      if (corrected !== digits && isValidSapDocNumber(corrected)) {
+        const score = Math.round(wb.confidence * 0.3)
+          + sapPrefixBoost(corrected)
+          + sapLengthBoost(corrected)
+          + regionBonus;
+        addCandidate(corrected, score, {
+          source: 'region_scan_corrected', page: page.page_number,
+          reason: `top region (διόρθωση OCR O/I/S/B), ocr_conf ${wb.confidence}, prefix ${sapPrefixLabel(corrected)}`,
+        });
+      }
     }
   }
 
