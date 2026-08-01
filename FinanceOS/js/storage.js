@@ -2,7 +2,7 @@
 import { state } from './state.js';
 import { $, toast, escapeHtml } from './utils.js';
 import { audit } from './audit.js';
-import { renderSuppliers } from './suppliers.js';
+import { renderSuppliers, refreshSupplierNormalization } from './suppliers.js';
 import { renderInvoices } from './invoices.js';
 import { renderAudit } from './audit.js';
 import { updateReviewBadge } from './badges.js';
@@ -90,6 +90,7 @@ export async function reloadFromShared() {
   if (Array.isArray(shared.suppliers)) {
     state.suppliers = shared.suppliers;
     merged += shared.suppliers.length;
+    refreshSupplierNormalization(); // self-heal any pre-fix name_normalized values
   }
   if (Array.isArray(shared.invoices)) {
     state.invoices = shared.invoices;

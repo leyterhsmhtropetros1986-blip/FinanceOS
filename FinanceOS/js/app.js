@@ -2,7 +2,7 @@
 import { $$ } from './utils.js';
 import { loadSettings, applySettingsToUI, initSettings, updateEngineStatus } from './settings.js';
 import { idbLoadState, idbLoadHandle, verifyPermission, updateArchiveRootDisplay, loadCurrentUser } from './storage.js';
-import { seedSuppliers, renderSuppliers, initSuppliers } from './suppliers.js';
+import { seedSuppliers, renderSuppliers, initSuppliers, refreshSupplierNormalization } from './suppliers.js';
 import { renderInvoices, initInvoices } from './invoices.js';
 import { renderAudit, initAuditView } from './audit.js';
 import { renderDashboard } from './dashboard.js';
@@ -90,6 +90,10 @@ async function boot() {
   const loaded = await idbLoadState();
   if (loaded && (loaded.sup || loaded.inv || loaded.aud)) {
     console.log(`✓ Restored ${loaded.sup} suppliers, ${loaded.inv} invoices, ${loaded.aud} audit entries`);
+    // Self-healing: fix any name_normalized values persisted before the
+    // Greek-letter-stripping normalizeForMatch() bug was fixed.
+    const fixed = refreshSupplierNormalization();
+    if (fixed) console.log(`✓ Επαναδημιουργήθηκαν ${fixed} name_normalized (Greek-letter fix)`);
   } else {
     seedSuppliers();
   }

@@ -26,6 +26,23 @@ export function seedSuppliers() {
   audit('supplier_import', 'success', `Seed data: ${seed.length} demo suppliers — εισάγετε το δικό σας αρχείο`, { actor: 'system', details: { imported: seed.length } });
 }
 
+/**
+ * Self-healing: `normalizeForMatch()` used to silently strip every Greek
+ * letter from any name (a JS regex quirk — `\w` is ASCII-only even with the
+ * /u flag), so any `name_normalized` persisted before that fix is empty or
+ * garbage for Greek-named suppliers, breaking fuzzy/name-based matching
+ * for them. Cheap and idempotent — safe to run unconditionally on every
+ * load rather than requiring the user to notice and click "Regen folders".
+ */
+export function refreshSupplierNormalization() {
+  let changed = 0;
+  for (const s of state.suppliers) {
+    const fresh = normalizeForMatch(s.name);
+    if (s.name_normalized !== fresh) { s.name_normalized = fresh; changed++; }
+  }
+  return changed;
+}
+
 // ═══════════════════════════════════════════════════════════
 
 // SUPPLIERS VIEW

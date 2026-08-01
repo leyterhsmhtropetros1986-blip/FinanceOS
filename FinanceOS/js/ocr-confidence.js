@@ -1,5 +1,5 @@
 /** Confidence engine — retry low-confidence fields on full OCR text */
-import { stripAccents, validateAfmChecksum, similarity, normalizeForMatch } from './helpers.js';
+import { stripAccents, validateAfmChecksum, similarity, normalizeForMatch, findCustomerSectionStart } from './helpers.js';
 
 const CONF_RETRY = 70;
 
@@ -86,7 +86,14 @@ export function sanitizeAgainstOcrText(extracted, fullText) {
 }
 
 export function fuzzyFindSupplierInText(fullText, suppliers) {
-  const upper = stripAccents(fullText.toUpperCase());
+  const fullUpper = stripAccents(fullText.toUpperCase());
+  // Only scan the issuer/header portion of the document — a raw text scan
+  // has no other way to tell a supplier's own name/AFM apart from the same
+  // strings appearing in a "customer / bill-to" block. Real case: a known
+  // supplier that also happens to be the CUSTOMER on this particular
+  // invoice (its name/AFM printed in ΣΤΟΙΧΕΙΑ ΠΕΛΑΤΗ) was wrongly matched
+  // as the issuing supplier because this scan had no section awareness.
+  const upper = fullUpper.slice(0, findCustomerSectionStart(fullUpper));
   let best = null;
   let bestScore = 0;
   for (const s of suppliers) {

@@ -5,7 +5,11 @@ export function stripAccents(text) {
   return (text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
 export function normalizeForMatch(text) {
-  return stripAccents(text || '').toUpperCase().replace(/[^\w\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+  // \w is ASCII-only in JS regex — even with the /u flag — so it silently
+  // stripped every Greek letter from every name (confirmed: a pure-Greek
+  // name normalized to an empty string). \p{L}/\p{N} are the Unicode-aware
+  // equivalents and correctly keep Greek text intact.
+  return stripAccents(text || '').toUpperCase().replace(/[^\p{L}\p{N}_\s]/gu, ' ').replace(/\s+/g, ' ').trim();
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -47,6 +51,53 @@ export function similarity(a, b) {
   if (!a || !b) return 0;
   const maxLen = Math.max(a.length, b.length);
   return Math.round((1 - levenshtein(a, b) / maxLen) * 100);
+}
+
+// ═══════════════════════════════════════════════════════════
+
+// DOCUMENT SECTION BOUNDARIES — avoid matching the CUSTOMER's own AFM/name
+// as if it were the SUPPLIER's, and avoid matching item/product codes
+// inside a line-items table as if they were header-level identifiers
+// ═══════════════════════════════════════════════════════════
+const CUSTOMER_SECTION_MARKERS = [
+  'CUSTOMER DATA', 'ΣΥΝΑΛΛΑΣΣΟΜΕΝΟΥ', 'ΣΤΟΙΧΕΙΑ ΠΕΛΑΤΗ',
+  'BILL TO', 'SHIP TO', 'ΕΠΩΝΥΜΙΑ NAME', 'ΚΩΔΙΚΟΣ CODE',
+];
+
+/** Index where a "customer / bill-to" section starts in already
+ *  uppercased+accent-stripped text, or text.length if none found. Matches
+ *  after this point are almost certainly the CUSTOMER, not the supplier who
+ *  issued the invoice — this matters most for business partners who show up
+ *  as a supplier on some invoices and a customer on others (a real case:
+ *  a manufacturer's own AFM/name printed in the ΣΤΟΙΧΕΙΑ ΠΕΛΑΤΗ block of an
+ *  invoice from one of ITS suppliers must never be read as if it issued
+ *  that invoice). */
+export function findCustomerSectionStart(upperText) {
+  let earliest = upperText.length;
+  for (const marker of CUSTOMER_SECTION_MARKERS) {
+    const idx = upperText.indexOf(marker);
+    if (idx !== -1 && idx < earliest) earliest = idx;
+  }
+  return earliest;
+}
+
+const ITEMS_TABLE_MARKERS = [
+  'ΠΕΡΙΓΡΑΦΗ ΕΙΔΟΥΣ', 'ΚΩΔΙΚΟΣ ΕΙΔΟΥΣ', 'ΤΙΜΗ ΜΟΝ', 'ΚΑΘ. ΤΙΜΗ', 'ΚΑΘ. ΑΞΙΑ',
+  'DESCRIPTION', 'UNIT PRICE',
+];
+
+/** Index where a tabular line-items section starts, or text.length if none
+ *  found. Product/item codes inside such a table can coincidentally have
+ *  the right digit count to look like an AFM/invoice number and even pass
+ *  the MOD-11 checksum by chance — confirmed with a real invoice where a
+ *  9-digit item code ("860000097") was picked up as the supplier's AFM. */
+export function findItemsTableStart(upperText) {
+  let earliest = upperText.length;
+  for (const marker of ITEMS_TABLE_MARKERS) {
+    const idx = upperText.indexOf(marker);
+    if (idx !== -1 && idx < earliest) earliest = idx;
+  }
+  return earliest;
 }
 
 // ═══════════════════════════════════════════════════════════

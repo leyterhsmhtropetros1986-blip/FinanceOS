@@ -3,7 +3,7 @@ import { state } from './state.js';
 import {
   stripAccents, validateAfmChecksum, similarity, sapPrefixBoost, sapLengthBoost,
   sapPrefixLabel, isValidSapDocNumber, hasAllowedSapPrefix, SAP_HANDWRITTEN_PREFIXES,
-  normalizeForMatch, normalizeConfusableDigits,
+  normalizeForMatch, normalizeConfusableDigits, findCustomerSectionStart, findItemsTableStart,
 } from './helpers.js';
 import { extractExtendedFields } from './field-extractors.js';
 import { fuzzyFindSupplierInText } from './ocr-confidence.js';
@@ -174,15 +174,7 @@ export function extractAfm(fullText) {
 
   // Βρες πού αρχίζει η ενότητα «στοιχεία πελάτη» — τα ΑΦΜ ΜΕΤΑ από αυτό συνήθως
   // είναι του πελάτη (εσένα), όχι του προμηθευτή που εξέδωσε το τιμολόγιο.
-  const CUSTOMER_MARKERS = [
-    'CUSTOMER DATA', 'ΣΥΝΑΛΛΑΣΣΟΜΕΝΟΥ', 'ΣΤΟΙΧΕΙΑ ΠΕΛΑΤΗ',
-    'BILL TO', 'SHIP TO', 'ΕΠΩΝΥΜΙΑ NAME', 'ΚΩΔΙΚΟΣ CODE',
-  ];
-  let customerStart = upper.length;
-  for (const marker of CUSTOMER_MARKERS) {
-    const p = upper.indexOf(marker);
-    if (p !== -1 && p < customerStart) customerStart = p;
-  }
+  const customerStart = findCustomerSectionStart(upper);
 
   // Pass 1: 9ψήφια κοντά σε keyword — με βαθμολογία θέσης
   for (const kw of AFM_KEYWORDS) {
@@ -212,8 +204,12 @@ export function extractAfm(fullText) {
     }
   }
 
-  // Pass 2: MOD-11 valid νούμερα οπουδήποτε (backup)
+  // Pass 2: MOD-11 valid νούμερα οπουδήποτε (backup) — αλλά ποτέ μέσα σε
+  // πίνακα ειδών, όπου κωδικοί προϊόντων μπορεί τυχαία να περάσουν το MOD-11
+  // (πραγματική περίπτωση: κωδικός είδους 9 ψηφίων πιάστηκε ως ΑΦΜ προμηθευτή).
+  const itemsStart = findItemsTableStart(upper);
   for (const m of upper.matchAll(/(?<!\d)(\d{9})(?!\d)/g)) {
+    if (m.index >= itemsStart) continue;
     const afm = m[1];
     if (validateAfmChecksum(afm) && !candidates.has(afm)) {
       const score = m.index < customerStart ? 78 : 55;
@@ -262,7 +258,11 @@ export function extractInvoiceNumber(fullText) {
   for (const { kw, conf } of INVOICE_KEYWORDS_BY_SPECIFICITY) {
     let idx = 0;
     while ((idx = upper.indexOf(kw, idx)) !== -1) {
-      let win = upper.slice(idx + kw.length, idx + kw.length + 60);
+      // Widened for the same reason as extractDate()'s window: table-header
+      // layouts ("ΤΥΠΟΣ ΠΑΡΑΣΤΑΤΙΚΟΥ | ΑΡΙΘΜΟΣ | ΗΜΕΡΟΜΗΝΙΑ | ΩΡΑ") can put
+      // 60+ characters between the column header and its value once OCR
+      // linearizes the row.
+      let win = upper.slice(idx + kw.length, idx + kw.length + 100);
       win = win.replace(/^[\s:.\-#Νο]+/, '');
       // Keep scanning tokens in the window instead of giving up after the
       // first one — a label is often followed by descriptive words before
