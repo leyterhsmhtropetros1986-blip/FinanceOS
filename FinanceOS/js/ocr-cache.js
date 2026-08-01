@@ -1,8 +1,16 @@
-/** In-memory OCR result cache keyed by file hash */
+/** In-memory + IndexedDB OCR result cache keyed by file hash */
 import { normalizeExtraction } from './extraction-schema.js';
 
 const _cache = new Map();
 const MAX_ENTRIES = 24;
+
+/** Bump whenever extraction/matching logic changes meaningfully. The
+ *  IndexedDB-backed cache persists across page reloads AND code deploys —
+ *  without this, a file OCR'd once under older (possibly buggy) extraction
+ *  logic would keep silently returning that stale result forever, making a
+ *  fixed bug look unfixed for any previously-tested file. Old-version
+ *  entries are treated as a cache miss and simply re-computed. */
+const CACHE_VERSION = 2;
 
 export async function computeFileHash(file) {
   const size = file.size;
@@ -31,7 +39,7 @@ export async function getCachedOcr(hash) {
     return normalizeCachedPayload(entry.payload);
   }
   const idb = await getIdbCache(hash);
-  if (idb) {
+  if (idb && idb._cacheVersion === CACHE_VERSION) {
     const normalized = normalizeCachedPayload(idb);
     _cache.set(hash, { payload: normalized, lastAccess: Date.now() });
     return normalized;
@@ -49,6 +57,7 @@ export function setCachedOcr(hash, payload) {
     if (oldestKey) _cache.delete(oldestKey);
   }
   const cloned = structuredClonePayload(payload);
+  cloned._cacheVersion = CACHE_VERSION;
   _cache.set(hash, { payload: cloned, lastAccess: Date.now() });
   setIdbCache(hash, cloned).catch(() => {});
 }

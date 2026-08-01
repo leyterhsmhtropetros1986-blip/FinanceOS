@@ -15,7 +15,7 @@
  *  3. extractInvoiceNumber()'s 60-char window was still too narrow for some
  *     table-header layouts (same class of bug already fixed for dates).
  */
-import { extractAfm, extractInvoiceNumber } from '../FinanceOS/js/ocr.js';
+import { extractAfm, extractInvoiceNumber, extractDate } from '../FinanceOS/js/ocr.js';
 import { fuzzyFindSupplierInText } from '../FinanceOS/js/ocr-confidence.js';
 import { findCustomerSectionStart, findItemsTableStart } from '../FinanceOS/js/helpers.js';
 
@@ -89,6 +89,37 @@ const BRATIS_DOC = `
 {
   const r = extractInvoiceNumber(BRATIS_DOC);
   check(r.value === 'ΤΔΑ002131' || r.value === '-ΤΔΑ002131', `should find the printed document number despite the header/value gap, got "${r.value}"`);
+}
+
+// 4. Invoice number / date must not be contaminated by item codes that look
+// like a shipping reference or a date once OCR mixes in Latin homoglyphs —
+// real case: Greek item code "ΕΙΔΗ-00002143" misread as "EIH-00002130",
+// which matched the shipping-invoice-number pattern outright, hiding the
+// real printed document number "105".
+const DELIOPLAST_DOC = `
+DELIOPLAST ΒΙΟΤΕΧΝΙΑ ΠΛΑΣΤΙΚΩΝ
+ΑΦΜ: 802055579 - Δ.Ο.Υ.: ΕΔΕΣΣΑΣ
+
+ΕΙΔΟΣ ΠΑΡΑΣΤΑΤΙΚΟΥ ΣΕΙΡΑ ΑΡΙΘΜΟΣ ΗΜΕΡΟΜΗΝΙΑ ΩΡΑ ΠΑΡΑΔΟΣΗΣ ΕΝΑΡΞΗΣ ΑΠΟΣΤΟΛΗΣ
+Τιμολόγιο Πώλησης ΤΠ 105 14/7/2026 9:32:00 πμ
+
+ΣΤΟΙΧΕΙΑ ΣΥΜΒΑΛΛΟΜΕΝΩΝ
+ΚΩΔΙΚΟΣ : ΠΕΛΛ-00050042
+ΕΠΩΝΥΜΙΑ : Rivulis Α.Β.Ε.Γ.Ε
+Α.Φ.Μ. : 094126376
+
+ΠΕΡΙΓΡΑΦΗ ΜΜ ΠΟΣ ΤΙΜΗ ΜΟΝ. ΑΞΙΑ
+EIΔΗ-00002143 ΣΩΛΗΝΑΚΙ PVC μ 2.000,00 0,0755 151,00
+EIΔΗ-00002139 ΣΩΛΗΝΑΚΙ PVC τεμ 1.332,00 2,1000 2.797,20
+`;
+{
+  const inv = extractInvoiceNumber(DELIOPLAST_DOC);
+  check(inv.value !== 'EIH-00002130', `must not pick up an item-table code as the invoice number, got "${inv.value}"`);
+  check(inv.value === '105', `should find the real printed document number, got "${inv.value}"`);
+
+  const dt = extractDate(DELIOPLAST_DOC);
+  const expected = new Date(2026, 6, 14).toISOString();
+  check(dt.value === expected, `should find 14/7/2026 from the header row, got ${dt.value} (expected ${expected})`);
 }
 
 console.log(failed ? `${failed} test(s) failed` : '✓ Supplier/customer confusion fixes verified');

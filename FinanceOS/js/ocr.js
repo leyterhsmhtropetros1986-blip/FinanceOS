@@ -232,7 +232,15 @@ export function extractAfm(fullText) {
 }
 
 export function extractInvoiceNumber(fullText) {
-  const upper = stripAccents(fullText.toUpperCase());
+  const fullUpper = stripAccents(fullText.toUpperCase());
+  // Never look inside a line-items table — product/item codes can look
+  // exactly like a document reference number (confirmed real case: a Greek
+  // item code, OCR'd with Latin/Greek homoglyphs mixed in, matched a
+  // shipping-invoice-number pattern outright and won over the real,
+  // printed header number).
+  const itemsStart = findItemsTableStart(fullUpper);
+  const scopedFullText = fullText.slice(0, itemsStart);
+  const upper = fullUpper.slice(0, itemsStart);
   let best = null; let bestConf = 0;
 
   // Shipping invoice patterns (COSCO, DHL, MAERSK, etc.)
@@ -244,7 +252,7 @@ export function extractInvoiceNumber(fullText) {
     /\b(INVOICE\s*[#:]?\s*([A-Z0-9][A-Z0-9/\-.]{3,20}))\b/i,
   ];
   for (const pat of shippingPatterns) {
-    const m = fullText.match(pat);
+    const m = scopedFullText.match(pat);
     if (m) {
       const candidate = (m[1] || m[0]).trim();
       if (candidate.length >= 4 && /\d/.test(candidate)) {
@@ -320,9 +328,15 @@ export function extractDate(fullText) {
       idx += kw.length;
     }
   }
-  // Pass 2: first parsable
+  // Pass 2: first parsable — bounded to before any line-items table, for the
+  // same reason as extractAfm()'s backup pass: an unconstrained "anywhere in
+  // the document" scan can latch onto an unrelated number inside the items
+  // section (quantities, prices, item-reference codes) that happens to look
+  // like a date pattern.
+  const itemsStart = findItemsTableStart(upper);
+  const headerUpper = upper.slice(0, itemsStart);
   for (const pat of patterns) {
-    for (const m of upper.matchAll(pat)) {
+    for (const m of headerUpper.matchAll(pat)) {
       const dt = tryParse(m[1]);
       if (dt) return { value: dt.toISOString(), confidence: 75 };
     }
