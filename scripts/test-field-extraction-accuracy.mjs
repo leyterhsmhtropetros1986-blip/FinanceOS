@@ -80,5 +80,23 @@ function check(cond, msg) {
   check(cands.length === 0, `garbage confusable text with no valid prefix after correction should yield no candidates, got ${JSON.stringify(cands)}`);
 }
 
+// 4. Region scan must not hard-exclude the bottom margin — real invoices carry
+// handwritten routing notes ("PO:", "Inv:") there just as often as at the top.
+{
+  const width = 1000;
+  const height = 1400;
+  const page = {
+    page_number: 1,
+    text: '',
+    width, height,
+    words: [
+      // Bottom-left margin, like "Po: 4500471482" / "Inv: 30407" handwritten notes
+      { text: '1900102292', confidence: 70, x: 50, y: Math.round(height * 0.85), w: 90, h: 14 },
+    ],
+  };
+  const cands = extractSapDocCandidates([page], '');
+  check(cands.some((c) => c.value === '1900102292'), `bottom-margin handwritten number must still be found, got ${JSON.stringify(cands.map((c) => c.value))}`);
+}
+
 console.log(failed ? `${failed} test(s) failed` : '✓ Field extraction accuracy fixes verified');
 process.exit(failed ? 1 : 0);

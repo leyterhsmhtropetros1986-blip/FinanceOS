@@ -106,6 +106,26 @@ export async function renderDocumentOnce(file, { onProgress, signal } = {}) {
 
   const embeddedFullText = embeddedPages.map((pg) => pg.text).join('\n');
 
+  // Handwritten pen annotations exist only as pixels — a text layer can
+  // never contain them. Even when the text layer is "sufficient" and lets
+  // us skip full-page OCR, still make page 1 available at OCR resolution so
+  // the lightweight handwriting-only fallback pass (ocr-handwriting.js) has
+  // something to look at; reuse the already-rendered page when we didn't skip.
+  let handwritingCanvas = originalCanvases[0] || null;
+  if (skipOcr) {
+    throwIfAborted(signal);
+    const page = await pdf.getPage(1);
+    const baseVp = page.getViewport({ scale: 1 });
+    const ocrScale = Math.min(2.0, OCR_MAX_WIDTH / baseVp.width);
+    const viewportOcr = page.getViewport({ scale: ocrScale });
+    const canvas = document.createElement('canvas');
+    canvas.width = viewportOcr.width;
+    canvas.height = viewportOcr.height;
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport: viewportOcr }).promise;
+    trackCanvas(canvas);
+    handwritingCanvas = canvas;
+  }
+
   return {
     originalCanvases,
     previewCanvases,
@@ -117,6 +137,7 @@ export async function renderDocumentOnce(file, { onProgress, signal } = {}) {
     virtual: useVirtual,
     pdfBuffer: useVirtual ? buffer : null,
     previewScale: PREVIEW_SCALE,
+    handwritingCanvas,
   };
 }
 
@@ -158,6 +179,7 @@ async function renderImageOnce(file, { signal }) {
       pageCount: 1,
       skipOcr: false,
       buffer: null,
+      handwritingCanvas: canvas,
     };
   } finally {
     URL.revokeObjectURL(url);

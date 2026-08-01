@@ -7,6 +7,9 @@ import { exportInvoicesToExcel, exportInvoicesToPdfZip, exportArchivedToExcel, e
 import { updateReviewBadge } from './badges.js';
 import { statusLabel } from './analytics.js';
 import { buildSapReadyRecord, SAP_PREP_STATUS } from './sap-preparation.js';
+import { MATCH_STATUS } from './sap-vendor-matching.js';
+import { DUPLICATE_STATUS } from './duplicate-detection.js';
+import { ACCOUNTING_VALIDATION_STATUS } from './accounting-validation.js';
 
 const selectedIds = new Set();
 let groupByVendor = false;
@@ -381,6 +384,28 @@ function bulkMove() {
   toast('Η μετακίνηση φακέλου απαιτεί σύνδεση με τον δίσκο αρχείων — χρησιμοποιήστε την οθόνη Αρχείο', 'ok');
 }
 
+/** Short, specific Greek reason an invoice isn't SAP_READY yet — so a "not
+ *  ready" result is actionable instead of a generic dead end. */
+function explainNotReady(prep) {
+  if (!prep) return 'σφάλμα υπολογισμού';
+  if (prep.sapPreparationStatus === SAP_PREP_STATUS.BLOCKED_DUPLICATE) return 'επιβεβαιωμένο διπλότυπο';
+  const reasons = [];
+  if (prep.extractionStatus?.status === 'INCOMPLETE') {
+    reasons.push(`λείπουν: ${prep.extractionStatus.missingFields.join(', ')}`);
+  }
+  const m = prep.supplierMatchStatus?.status;
+  if (m === MATCH_STATUS.NO_MATCH) reasons.push('προμηθευτής: χωρίς SAP vendor match');
+  else if (m === MATCH_STATUS.REVIEW_REQUIRED) reasons.push('προμηθευτής: χρειάζεται έλεγχο');
+  else if (m === MATCH_STATUS.CONFLICT) reasons.push('προμηθευτής: αντικρουόμενα στοιχεία');
+  if (prep.accountingValidationStatus?.status === ACCOUNTING_VALIDATION_STATUS.INVALID) {
+    reasons.push('λογιστικός έλεγχος απέτυχε');
+  }
+  if (prep.duplicateStatus?.status === DUPLICATE_STATUS.POSSIBLE) reasons.push('πιθανό διπλότυπο');
+  if (prep.workflowClassification?.requiresReview) reasons.push('workflow: χρειάζεται έλεγχο');
+  if (prep.missingRequiredFields?.length) reasons.push(`λείπει: ${prep.missingRequiredFields.join(', ')}`);
+  return reasons.length ? reasons.join(', ') : 'χρειάζεται έλεγχο';
+}
+
 /** "Prepare for SAP" (Phase 12) — explicitly NOT "Post to SAP". Only ever
  *  stamps FinanceOS-local metadata; never contacts SAP in any way. Only
  *  allowed for the subset of the current selection that is SAP_READY. */
@@ -399,7 +424,11 @@ function bulkPrepareForSap() {
   }
 
   if (!ready.length) {
-    toast('Κανένα από τα επιλεγμένα δεν είναι SAP READY — ελέγξτε προμηθευτή/ποσά/διπλότυπα πρώτα', 'err');
+    const sample = invoices.slice(0, 3)
+      .map((inv) => `${inv.invoice_number || inv.original_filename || `#${inv.id}`}: ${explainNotReady(getSapPrep(inv))}`)
+      .join(' · ');
+    const more = invoices.length > 3 ? ` (+${invoices.length - 3} ακόμα)` : '';
+    toast(`Κανένα δεν είναι SAP READY — ${sample}${more}`, 'err');
     return;
   }
   const now = new Date().toISOString();

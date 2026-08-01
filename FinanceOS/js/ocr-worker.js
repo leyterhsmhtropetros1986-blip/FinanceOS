@@ -27,12 +27,19 @@ self.onmessage = async (e) => {
     }
     if (type === 'recognize') {
       const w = await ensureTesseract();
-      const { width, height, buffer } = msg;
+      const { width, height, buffer, params } = msg;
       const rgba = new Uint8ClampedArray(buffer);
       const canvas = new OffscreenCanvas(width, height);
       const ctx = canvas.getContext('2d');
       ctx.putImageData(new ImageData(rgba, width, height), 0, 0);
+      // Optional per-call override (e.g. sparse-text PSM for a handwriting
+      // pass) — always restored to the shared default afterward since this
+      // worker's Tesseract instance is reused across unrelated calls.
+      if (params) await w.setParameters(params);
       const { data } = await w.recognize(canvas);
+      if (params) {
+        await w.setParameters({ tessedit_pageseg_mode: '6', tessedit_char_whitelist: '' });
+      }
       self.postMessage({
         id,
         type,

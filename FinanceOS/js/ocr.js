@@ -420,10 +420,17 @@ export function extractSapDocCandidates(pages, fullText) {
       });
     }
 
-    // Region scan: top area (handwritten SAP doc often top-right or top-center)
+    // Region scan: handwritten SAP doc numbers cluster in the top header OR
+    // the bottom margin (routing notes) — not exclusively the top, so this
+    // rewards those zones instead of hard-excluding everything else (the
+    // strict prefix+length check in addCandidate() already guards against
+    // false positives from body text).
     for (const wb of page.words) {
-      if (wb.y > page.height * 0.45) continue;
-      const regionBonus = wb.x >= page.width * 0.45 ? 12 : 6;
+      const topZone = wb.y <= page.height * 0.3;
+      const bottomZone = wb.y >= page.height * 0.7;
+      let regionBonus = 0;
+      if (topZone) regionBonus = wb.x >= page.width * 0.45 ? 12 : 6;
+      else if (bottomZone) regionBonus = wb.x < page.width * 0.5 ? 10 : 5;
 
       const digits = wb.text.replace(/\D/g, '');
       if (isValidSapDocNumber(digits)) {
@@ -433,7 +440,7 @@ export function extractSapDocCandidates(pages, fullText) {
           + regionBonus;
         addCandidate(digits, score, {
           source: 'region_scan', page: page.page_number,
-          reason: `top region, ocr_conf ${wb.confidence}, prefix ${sapPrefixLabel(digits)}`,
+          reason: `${topZone ? 'top' : bottomZone ? 'bottom' : 'mid'} region, ocr_conf ${wb.confidence}, prefix ${sapPrefixLabel(digits)}`,
         });
         continue;
       }
@@ -448,7 +455,7 @@ export function extractSapDocCandidates(pages, fullText) {
           + regionBonus;
         addCandidate(corrected, score, {
           source: 'region_scan_corrected', page: page.page_number,
-          reason: `top region (διόρθωση OCR O/I/S/B), ocr_conf ${wb.confidence}, prefix ${sapPrefixLabel(corrected)}`,
+          reason: `${topZone ? 'top' : bottomZone ? 'bottom' : 'mid'} region (διόρθωση OCR O/I/S/B), ocr_conf ${wb.confidence}, prefix ${sapPrefixLabel(corrected)}`,
         });
       }
     }

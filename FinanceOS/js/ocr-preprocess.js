@@ -277,6 +277,34 @@ export function cropHeaderRegion(source, ratio = 0.35) {
   return canvas;
 }
 
+/** Crop a full-width horizontal strip between two vertical ratios (0-1).
+ *  Handwritten annotations cluster in the top header area OR the bottom
+ *  margin — not only the very top. Returns the offset so word coordinates
+ *  can be mapped back to the full page afterward. */
+export function cropStrip(source, { from = 0, to = 1 } = {}) {
+  const y0 = Math.max(0, Math.round(source.height * from));
+  const y1 = Math.min(source.height, Math.round(source.height * to));
+  const h = Math.max(1, y1 - y0);
+  const canvas = document.createElement('canvas');
+  canvas.width = source.width;
+  canvas.height = h;
+  canvas.getContext('2d').drawImage(source, 0, y0, source.width, h, 0, 0, source.width, h);
+  return { canvas, offsetX: 0, offsetY: y0 };
+}
+
+/** Upscale — handwriting benefits from more effective pixel resolution per
+ *  stroke than a page-wide scan typically provides. */
+export function upscaleCanvas(source, factor = 1.6) {
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(source.width * factor));
+  canvas.height = Math.max(1, Math.round(source.height * factor));
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
 export function getOcrPassVariants(canvas) {
   const enhanced = enhanceCanvas(canvas);
   const preprocessed = preprocessForOcr(canvas);

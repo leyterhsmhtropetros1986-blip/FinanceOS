@@ -1,6 +1,6 @@
 /* FinanceOS — tables.css */
 /* ─── Data tables ───────────────────────────────────────── */
-.table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); overflow: hidden; box-shadow: var(--shadow-sm); }
+.table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); overflow-x: auto; overflow-y: hidden; box-shadow: var(--shadow-sm); }
 .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .data-table th { text-align: left; padding: 14px 16px; background: var(--surface-alt); color: var(--text-muted); font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; border-bottom: 1px solid var(--border); }
 .data-table td { padding: 14px 16px; border-bottom: 1px solid var(--border); vertical-align: middle; }

@@ -50,8 +50,11 @@ function releaseWorker(w) {
 /**
  * Run Tesseract recognize on canvas in a Web Worker.
  * @param {HTMLCanvasElement} canvas
+ * @param {object|null} params - optional per-call Tesseract parameter
+ *   override (e.g. { tessedit_pageseg_mode: '11' } for sparse handwritten
+ *   annotations); always reset back to the shared default worker-side.
  */
-export async function recognizeInWorker(canvas) {
+export async function recognizeInWorker(canvas, params = null) {
   const ctx = canvas.getContext('2d');
   const { width, height } = canvas;
   const imageData = ctx.getImageData(0, 0, width, height);
@@ -73,6 +76,7 @@ export async function recognizeInWorker(canvas) {
         width,
         height,
         buffer: imageData.data.buffer,
+        params,
       }, [imageData.data.buffer]);
     });
     return data;

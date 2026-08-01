@@ -80,12 +80,19 @@ const wellFormedInvoice = {
   check(nonPoResult.sapPreparationStatus === SAP_PREP_STATUS.SAP_READY, 'unresolved GL/cost center alone should not block SAP_READY either — same reasoning as taxCode');
 }
 
-// --- companyCode IS resolvable via vendor master, so its absence DOES gate SAP_READY ---
+// --- companyCode has no populated master data in most real installs yet —
+// its absence must NOT block SAP_READY (same reasoning as taxCode/GL/cost
+// center: gating on it would make SAP_READY unreachable for everyone until
+// vendor master data is fully enriched). Confirmed against real usage where
+// this previously blocked every single invoice, including fully-matched,
+// fully-valid, non-duplicate ones. ---
 {
   const suppliersNoCompanyCode = [{ ...suppliers[0], company_code: '' }];
   const result = buildSapReadyRecord(wellFormedInvoice, { suppliers: suppliersNoCompanyCode, allInvoices: [wellFormedInvoice] });
-  check(result.sapPreparationStatus === SAP_PREP_STATUS.REVIEW_REQUIRED, `missing companyCode (resolvable via vendor master) should force REVIEW_REQUIRED, got ${result.sapPreparationStatus}`);
-  check(result.missingRequiredFields.includes('companyCode'), 'missingRequiredFields should list companyCode');
+  check(result.sapPreparationStatus === SAP_PREP_STATUS.SAP_READY, `missing companyCode alone must not block SAP_READY, got ${result.sapPreparationStatus}`);
+  check(result.sapPrep.companyCode === MISSING, 'companyCode should still read as MISSING on the record for visibility');
+  check(result.unresolvedSapCodingFields.includes('companyCode'), 'companyCode should be listed as an unresolved SAP-coding field');
+  check(!result.missingRequiredFields.includes('companyCode'), 'companyCode must not appear in the blocking missingRequiredFields list');
 }
 
 // --- Confirmed duplicate blocks SAP readiness outright ---

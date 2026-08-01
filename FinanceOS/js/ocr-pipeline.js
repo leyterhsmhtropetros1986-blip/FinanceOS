@@ -12,6 +12,7 @@ import { blankExtraction, normalizeExtraction } from './extraction-schema.js';
 import { matchSupplierCached } from './match-cache.js';
 import { logStageError } from './upload-safe.js';
 import { computeFileHash, getCachedOcr, setCachedOcr } from './ocr-cache.js';
+import { runHandwritingFallback } from './ocr-handwriting.js';
 import {
   startOcrJob, throwIfAborted, createTimings, cleanupOcrMemory,
 } from './ocr-session.js';
@@ -202,6 +203,40 @@ export async function runOcrPipeline(file, {
   const ocrConfidence = computeMeanConfidence(allPages, bundle.embeddedPages);
   extracted._meanOcrConfidence = ocrConfidence;
   timings.mark('regex');
+
+  // Handwritten SAP doc numbers are pixel-only content the main pass may
+  // have missed entirely (a text-layer PDF never renders a canvas at all —
+  // see ocr-render.js) or simply not found with confidence. One extra
+  // lightweight, free (Tesseract, no API credits) pass over the likely
+  // annotation zones — only runs when actually needed, so the common case
+  // (main pass already found it) stays fast.
+  if ((extracted.confidence_sap_doc || 0) < 60 && bundle.handwritingCanvas) {
+    try {
+      throwIfAborted(externalSignal);
+      progress.report('Χειρόγραφο — επιπλέον OCR pass…');
+      const hw = await runHandwritingFallback(bundle.handwritingCanvas);
+      if (hw.text || hw.words.length) {
+        const hwPage = {
+          page_number: 1, text: hw.text, words: hw.words,
+          width: bundle.handwritingCanvas.width, height: bundle.handwritingCanvas.height,
+          mean_confidence: 60, source: 'ocr_handwriting',
+        };
+        const hwFullText = `${fullText}\n${hw.text}`;
+        const hwPages = [hwPage, ...allPages];
+        const sapCands = extractors.extractSapDocCandidates(hwPages, hwFullText);
+        if (sapCands[0] && sapCands[0].confidence > (extracted.confidence_sap_doc || 0)) {
+          extracted.sap_doc_number = sapCands[0].value;
+          extracted.confidence_sap_doc = sapCands[0].confidence;
+          extracted.sap_doc_candidates = sapCands;
+        }
+      }
+    } catch (e) {
+      if (e.name === 'AbortError') throw e;
+      logStageError('handwriting', e);
+      // non-fatal — the main extraction result still stands
+    }
+  }
+  timings.mark('handwriting');
 
   const engine = skipOcr
     ? 'PDF text (fast)'

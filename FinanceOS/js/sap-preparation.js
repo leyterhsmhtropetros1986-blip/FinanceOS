@@ -56,17 +56,21 @@ export function buildSapReadyRecord(invoice, { suppliers = [], vendorMappings = 
   const matchedSupplier = suppliers.find((s) => s.sap_vendor_code === vendorMatch.sapVendorCode) || null;
   const companyCode = matchedSupplier?.company_code || null;
 
-  // Fields this build CAN resolve (via SAP Vendor Master import) gate SAP_READY
-  // when missing. Fields with no master-data source anywhere in this phase
-  // (tax code, GL, cost center — no such master exists yet) are recorded as
-  // MISSING on the record for visibility but never block SAP_READY: doing so
-  // would make SAP_READY permanently unreachable, and posting-level SAP
-  // coding is explicitly deferred to a later, real-SAP-connected phase.
+  // Only sapVendorCode gates SAP_READY when missing — it's the one thing
+  // this pipeline's own matching engine is responsible for resolving.
+  // companyCode/taxCode/glAccount/costCenter have no master-data source of
+  // their own anywhere in this phase (company code lives on the SAP Vendor
+  // Master import, but real installs won't have backfilled it on day one)
+  // — spec groups them together as "never guess, mark MISSING", so all four
+  // are recorded on the record for visibility but never block SAP_READY:
+  // gating on any of them would make SAP_READY permanently unreachable
+  // until vendor data is fully enriched. Posting-level SAP coding is
+  // explicitly deferred to a later, real-SAP-connected phase.
   const missingRequiredFields = [];
   if (!vendorMatch.sapVendorCode) missingRequiredFields.push('sapVendorCode');
-  if (!companyCode) missingRequiredFields.push('companyCode');
 
   const unresolvedSapCodingFields = ['taxCode'];
+  if (!companyCode) unresolvedSapCodingFields.push('companyCode');
   if (workflowClassification.workflow === DOCUMENT_WORKFLOW.NON_PO_INVOICE) {
     // FB60 postings need a GL account and cost center; PO invoices (MIRO)
     // typically derive these from the PO itself, so they are not required here.
