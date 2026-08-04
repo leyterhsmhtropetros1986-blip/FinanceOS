@@ -10,7 +10,7 @@ const MAX_ENTRIES = 24;
  *  logic would keep silently returning that stale result forever, making a
  *  fixed bug look unfixed for any previously-tested file. Old-version
  *  entries are treated as a cache miss and simply re-computed. */
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 3;
 
 export async function computeFileHash(file) {
   const size = file.size;

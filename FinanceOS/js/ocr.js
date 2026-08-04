@@ -263,6 +263,11 @@ export function extractInvoiceNumber(fullText) {
   }
 
   const candidateRe = /([A-ZΑ-Ω0-9][A-ZΑ-Ω0-9/\-.]{2,19})/g;
+  // A date is never an invoice number — table rows put "ΑΡΙΘΜΟΣ ... ΗΜΕΡΟΜΗΝΙΑ"
+  // right next to each other, so a keyword window can genuinely reach the
+  // date column before/instead of the real number. Skip date-shaped tokens
+  // and keep scanning rather than accepting them.
+  const DATE_SHAPE_RE = /^\d{1,4}[/\-.]\d{1,2}[/\-.]\d{1,4}$/;
   for (const { kw, conf } of INVOICE_KEYWORDS_BY_SPECIFICITY) {
     let idx = 0;
     while ((idx = upper.indexOf(kw, idx)) !== -1) {
@@ -279,6 +284,7 @@ export function extractInvoiceNumber(fullText) {
       let m;
       while ((m = candidateRe.exec(win)) !== null) {
         const candidate = m[1];
+        if (DATE_SHAPE_RE.test(candidate)) continue;
         if (/\d/.test(candidate) && !(candidate.length === 9 && /^\d+$/.test(candidate))) {
           if (conf > bestConf) { best = candidate; bestConf = conf; }
           break;

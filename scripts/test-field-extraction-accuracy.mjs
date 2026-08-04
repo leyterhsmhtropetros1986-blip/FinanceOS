@@ -98,5 +98,15 @@ function check(cond, msg) {
   check(cands.some((c) => c.value === '1900102292'), `bottom-margin handwritten number must still be found, got ${JSON.stringify(cands.map((c) => c.value))}`);
 }
 
+// 5. Invoice number must never be a date — a generic keyword's window can
+// legitimately reach a neighboring date column before the real number in a
+// table row ("ΑΡΙΘΜΟΣ ... ΗΜΕΡΟΜΗΝΙΑ" side by side); a date-shaped token
+// must be skipped in favor of the real number, not accepted as-is.
+{
+  const r = extractInvoiceNumber('ΑΡΙΘΜΟΣ 22/07/2026 918');
+  check(r.value !== '22/07/2026', `must not accept a date-shaped token as the invoice number, got "${r.value}"`);
+  check(r.value === '918', `should keep scanning past the date to find the real number, got "${r.value}"`);
+}
+
 console.log(failed ? `${failed} test(s) failed` : '✓ Field extraction accuracy fixes verified');
 process.exit(failed ? 1 : 0);
